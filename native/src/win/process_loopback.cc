@@ -23,8 +23,8 @@
 
 #include <audioclient.h>
 #include <audioclientactivationparams.h>
-#include <ksmedia.h>
 #include <mmdeviceapi.h>
+#include <propidl.h>
 #include <windows.h>
 
 #include <algorithm>
@@ -40,6 +40,7 @@
 
 #include "../dsp/convert.h"
 #include "../dsp/resampler.h"
+#include "audio_subformat.h"
 #include "com_ptr.h"
 #include "win_internal.h"
 #include "windows_backend.h"
@@ -76,8 +77,8 @@ void makeFloatFormat(WAVEFORMATEXTENSIBLE& format, int sampleRate, int channels)
     format.Format.nAvgBytesPerSec = static_cast<DWORD>(sampleRate * channels * 4);
     format.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
     format.Samples.wValidBitsPerSample = 32;
-    format.dwChannelMask = channels >= 2 ? KSAUDIO_SPEAKER_STEREO : KSAUDIO_SPEAKER_MONO;
-    format.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+    format.dwChannelMask = channels >= 2 ? kSpeakerStereo : kSpeakerMono;
+    format.SubFormat = kSubFormatIeeeFloat;
 }
 
 AudioFormat audioFormatFrom(const WAVEFORMATEX* format) {
@@ -88,11 +89,11 @@ AudioFormat audioFormatFrom(const WAVEFORMATEX* format) {
 
     if (format->wFormatTag == WAVE_FORMAT_EXTENSIBLE && format->cbSize >= 22) {
         const auto* extended = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(format);
-        if (extended->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) {
+        if (sameGuid(extended->SubFormat, kSubFormatIeeeFloat)) {
             result.sample = SampleFormat::IeeeFloat32;
             return result;
         }
-        if (extended->SubFormat == KSDATAFORMAT_SUBTYPE_PCM) {
+        if (sameGuid(extended->SubFormat, kSubFormatPcm)) {
             if (format->wBitsPerSample == 16) result.sample = SampleFormat::PcmS16;
             else if (format->wBitsPerSample == 24) result.sample = SampleFormat::PcmS24;
             else if (format->wBitsPerSample == 32) result.sample = SampleFormat::PcmS32;
