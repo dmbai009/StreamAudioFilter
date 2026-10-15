@@ -1,5 +1,3 @@
 main.cc
 hr_advice.cc
 Generating Code...
-main.obj : error LNK2019: unresolved external symbol IID_IActivateAudioInterfaceCompletionHandler referenced in function "public: virtual long __cdecl saf::win::ComCallback<struct IActivateAudioInterfaceCompletionHandler,&struct _GUID const IID_IActivateAudioInterfaceCompletionHandler>::QueryInterface(struct _GUID const &,void * *)" (?QueryInterface@?$ComCallback@UIActivateAudioInterfaceCompletionHandler@@$1?IID_IActivateAudioInterfaceCompletionHandler@@3U_GUID@@B@win@saf@@UEAAJAEBU_GUID@@PEAPEAX@Z)
-build\probe\process-loopback-probe.exe : fatal error LNK1120: 1 unresolved externals
