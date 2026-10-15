@@ -33,7 +33,7 @@ TARGET="$VENCORD_DIR/src/userplugins/StreamAudioFilter"
 rm -rf "$TARGET"
 mkdir -p "$TARGET"
 
-for item in types.ts native.ts nativeBridge.ts dataStore.ts index.tsx apps audio components stream ui style.css; do
+for item in types.ts native.ts nativeBridge.ts dataStore.ts settings.ts index.tsx apps audio components stream ui style.css; do
     [ -e "$ROOT/$item" ] && cp -r "$ROOT/$item" "$TARGET/"
 done
 
@@ -44,7 +44,7 @@ npx tsc --noEmit
 if [ "${FIX:-0}" = "1" ]; then
     echo "== eslint --fix (results are copied back into the repository) =="
     npx eslint --fix "src/userplugins/StreamAudioFilter" || true
-    for item in types.ts native.ts nativeBridge.ts dataStore.ts index.tsx apps audio components stream ui style.css; do
+    for item in types.ts native.ts nativeBridge.ts dataStore.ts settings.ts index.tsx apps audio components stream ui style.css; do
         [ -e "$TARGET/$item" ] && cp -r "$TARGET/$item" "$ROOT/"
     done
 fi
