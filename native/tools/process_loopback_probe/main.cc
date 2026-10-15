@@ -58,6 +58,10 @@
 
 #include "../../src/hr_advice.h"
 #include "../../src/win/audio_subformat.h"
+// The COM identities the SDK only declares (their definitions live in uuid.lib,
+// which not every SDK/MSVC combination ships): the same header the addon uses,
+// so the probe and the plugin answer IID queries identically.
+#include "../../src/win/com_iids.h"
 #include "../../src/win/com_ptr.h"
 
 using saf::win::ComCallback;
