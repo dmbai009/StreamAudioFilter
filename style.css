@@ -1,0 +1,332 @@
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Styles of the plugin. Discord's own variables are used wherever possible so
+ * the panels follow the active theme instead of fighting it.
+ */
+
+/* ------------------------------------------------------------------ panel */
+
+.vc-saf-panel,
+.vc-saf-popout {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75em;
+}
+
+.vc-saf-popout {
+    width: 420px;
+    max-width: 90vw;
+    max-height: 70vh;
+    overflow: hidden auto;
+    padding: 0.75em;
+}
+
+.vc-saf-muted {
+    color: var(--text-muted, var(--text-normal));
+    opacity: 0.85;
+}
+
+.vc-saf-divider {
+    margin: 0.25em 0;
+}
+
+.vc-saf-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.vc-saf-hint {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    padding: 0.5em 0.6em;
+    border-radius: 8px;
+    background: var(--background-mod-subtle, var(--background-secondary));
+    color: var(--text-muted, var(--text-normal));
+}
+
+/* ----------------------------------------------------------------- section */
+
+.vc-saf-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+}
+
+.vc-saf-section-title {
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    color: var(--text-muted, var(--text-normal));
+    white-space: nowrap;
+}
+
+.vc-saf-section-divider {
+    flex: 1 1 auto;
+    margin: 0;
+}
+
+/* --------------------------------------------------------------------- row */
+
+.vc-saf-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    padding: 0.4em 0.5em;
+    border-radius: 8px;
+    background: var(--background-mod-subtle, var(--background-secondary));
+}
+
+.vc-saf-row[data-state="error"],
+.vc-saf-row[data-state="unsupported"] {
+    background: color-mix(in srgb, var(--status-danger, #da373c) 12%, var(--background-mod-subtle, var(--background-secondary)));
+}
+
+.vc-saf-row-icon {
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.vc-saf-row-icon img {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+}
+
+.vc-saf-row-icon-fallback {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--background-tertiary, var(--background-secondary));
+    color: var(--text-muted, var(--text-normal));
+    font-weight: 600;
+}
+
+.vc-saf-row-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1em;
+}
+
+.vc-saf-row-title {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+    min-width: 0;
+}
+
+.vc-saf-row-name {
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.vc-saf-row-badge {
+    font-size: 0.6875rem;
+    padding: 0 0.35em;
+    border-radius: 4px;
+    background: var(--background-tertiary, var(--background-secondary));
+    color: var(--text-muted, var(--text-normal));
+    cursor: help;
+}
+
+.vc-saf-row-sub {
+    display: flex;
+    gap: 0.4em;
+    flex-wrap: wrap;
+    color: var(--text-muted, var(--text-normal));
+}
+
+.vc-saf-row-error {
+    color: var(--status-danger, #da373c);
+}
+
+.vc-saf-row-side {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+}
+
+/* ------------------------------------------------------------------- meter */
+
+.vc-saf-meter {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 16px;
+}
+
+.vc-saf-meter-bar {
+    width: 3px;
+    border-radius: 2px;
+    background: var(--background-tertiary, var(--background-secondary));
+    height: 30%;
+}
+
+.vc-saf-meter-bar[data-on="true"] {
+    background: var(--status-positive, #248046);
+    height: 100%;
+}
+
+/* -------------------------------------------------------------------- chip */
+
+.vc-saf-chip {
+    font-size: 0.6875rem;
+    padding: 0.1em 0.45em;
+    border-radius: 999px;
+    white-space: nowrap;
+    background: var(--background-tertiary, var(--background-secondary));
+    color: var(--text-muted, var(--text-normal));
+}
+
+.vc-saf-chip[data-tone="ok"] {
+    background: color-mix(in srgb, var(--status-positive, #248046) 25%, transparent);
+    color: var(--text-normal);
+}
+
+.vc-saf-chip[data-tone="warn"] {
+    background: color-mix(in srgb, var(--status-warning, #f0b232) 25%, transparent);
+    color: var(--text-normal);
+}
+
+.vc-saf-chip[data-tone="danger"] {
+    background: color-mix(in srgb, var(--status-danger, #da373c) 25%, transparent);
+    color: var(--text-normal);
+}
+
+/* ------------------------------------------------------------- diagnostics */
+
+.vc-saf-diagnostics {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+}
+
+.vc-saf-diagnostics-toggle {
+    all: unset;
+    cursor: pointer;
+    color: var(--text-link, var(--text-normal));
+}
+
+.vc-saf-diagnostics-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25em;
+}
+
+.vc-saf-diag-row {
+    display: flex;
+    gap: 0.6em;
+}
+
+.vc-saf-diag-label {
+    flex: 0 0 190px;
+    color: var(--text-muted, var(--text-normal));
+}
+
+.vc-saf-diag-value {
+    flex: 1 1 auto;
+    word-break: break-all;
+}
+
+.vc-saf-diag-actions {
+    display: flex;
+    gap: 0.5em;
+    flex-wrap: wrap;
+}
+
+.vc-saf-diag-pre {
+    margin: 0;
+    padding: 0.5em;
+    max-height: 200px;
+    overflow: auto;
+    border-radius: 6px;
+    background: var(--background-tertiary, var(--background-secondary));
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+}
+
+.vc-saf-diag-hint {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    padding: 0.5em;
+    border-radius: 8px;
+    background: var(--background-mod-subtle, var(--background-secondary));
+}
+
+/* ------------------------------------------------------------ floating UI */
+
+.vc-saf-floating-root {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2000;
+}
+
+.vc-saf-floating {
+    position: fixed;
+    width: 400px;
+    max-width: calc(100vw - 32px);
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    pointer-events: auto;
+    border-radius: 10px;
+    border: 1px solid var(--border-subtle, var(--background-modifier-accent));
+    background: var(--background-base-low, var(--background-primary));
+    box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
+    overflow: hidden;
+}
+
+.vc-saf-floating[data-collapsed="true"] {
+    width: 240px;
+}
+
+.vc-saf-floating-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5em;
+    padding: 0.4em 0.5em;
+    cursor: move;
+    background: var(--background-mod-subtle, var(--background-secondary));
+}
+
+.vc-saf-floating-btn {
+    all: unset;
+    cursor: pointer;
+    padding: 0 0.35em;
+    border-radius: 4px;
+    color: var(--text-muted, var(--text-normal));
+}
+
+.vc-saf-floating-btn:hover {
+    background: var(--background-modifier-hover, var(--background-tertiary));
+    color: var(--text-normal);
+}
+
+.vc-saf-floating-body {
+    padding: 0.6em;
+    overflow: hidden auto;
+}
+
+.vc-saf-panel-icon {
+    display: block;
+}

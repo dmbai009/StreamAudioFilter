@@ -33,7 +33,7 @@ export function resolveTransmit(state: RulesState, appKey: string): boolean {
 }
 
 /** Records an explicit decision and remembers how to display the entry later. */
-export function setTransmit(state: RulesState, app: Pick<AppInfo, "appKey" | "displayName" | "exePath">, transmit: boolean, now = Date.now()): RulesState {
+export function setTransmit(state: RulesState, app: Pick<AppInfo, "appKey"> & Partial<Pick<AppInfo, "displayName" | "exePath">>, transmit: boolean, now = Date.now()): RulesState {
     const existing = state.rules[app.appKey];
     const rule: AppRule = {
         transmit,

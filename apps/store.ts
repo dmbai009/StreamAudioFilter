@@ -18,6 +18,7 @@ import { React } from "@webpack/common";
 import { createFilteredTrack, type FilteredTrack } from "../audio/sourceTrack";
 import { DataStore } from "../dataStore";
 import { Engine, Native } from "../nativeBridge";
+import { settings } from "../settings";
 import type { AppInfo, EngineStats, NativeEnvironment, RulesState, StreamStatus } from "../types";
 import { buildAppList, normaliseState, resetRules, resolveTransmit, seedDefaults, setMode as setModeInState, setTransmit } from "./rules";
 
@@ -131,7 +132,7 @@ class Store {
         await this.refresh();
     }
 
-    async setTransmit(app: AppInfo, transmit: boolean): Promise<void> {
+    async setTransmit(app: Pick<AppInfo, "appKey"> & Partial<Pick<AppInfo, "displayName" | "exePath">>, transmit: boolean): Promise<void> {
         this.set({ rules: setTransmit(this.state.rules, app, transmit) });
         await this.persist();
         await this.applyRules();
@@ -149,7 +150,9 @@ class Store {
     // ------------------------------------------------------------------- engine
 
     private backend(): "auto" | "wasapi" | "mock" {
-        return (this.state.environment as any)?.backend ?? "auto";
+        // The scripted back end exists to verify the whole pipeline without
+        // WASAPI; it is never selected implicitly.
+        return settings.store.testBackend ? "mock" : "auto";
     }
 
     /** Starts the engine in monitor mode (no capture) — used by the panels. */
@@ -158,7 +161,13 @@ class Store {
         if (!this.loadedRules) await this.loadRules();
 
         this.set({ loading: true });
-        const result = await Engine.start({ sampleRate: SAMPLE_RATE, blockMs: 10, maxStreams: 16, outputBufferMs: 300, backend: this.backend() });
+        const result = await Engine.start({
+            sampleRate: SAMPLE_RATE,
+            blockMs: 10,
+            maxStreams: settings.store.maxStreams || 12,
+            outputBufferMs: 300,
+            backend: this.backend()
+        });
         this.set({ loading: false });
 
         if (!result.ok) {
@@ -216,7 +225,7 @@ class Store {
         try {
             const handle = await createFilteredTrack({
                 sampleRate: SAMPLE_RATE,
-                bufferedMs: this.state.stream.pipelinedMs || 60,
+                bufferedMs: settings.store.bufferMs || 60,
                 pull: frames => Native.readPcm(frames),
                 onStats: stats => this.set({
                     stream: { ...this.state.stream, underruns: stats.underruns, pipelinedMs: Math.round(stats.bufferedMs), sampleRate: stats.sampleRate }
@@ -230,6 +239,16 @@ class Store {
             this.set({ lastError: reason, stream: { ...this.state.stream, filtering: false, active: false, reason } });
             return null;
         }
+    }
+
+    /**
+     * Discord reports a running stream. Used for the status display, and to
+     * detect the case where a stream exists but our audio hook never fired.
+     */
+    markStreamStarted(): void {
+        if (this.state.stream.active) return;
+        this.set({ stream: { ...this.state.stream, active: true, startedAt: Date.now() } });
+        this.startPolling();
     }
 
     /** Called when the share ends (or the plugin is stopped). */
