@@ -1,0 +1,56 @@
+name: Native audio core
+
+on:
+  push:
+    paths:
+      - "native/**"
+      - "scripts/**"
+      - ".github/workflows/native.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Fast feedback on Linux: the portable DSP + engine tests need no Windows SDK.
+  portable-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run portable tests
+        run: ./scripts/run-native-tests.sh
+
+  # Compiles the real WASAPI backend with MSVC and produces the addon.
+  windows-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build native addon (node-gyp + MSVC)
+        working-directory: native
+        run: npx --yes node-gyp rebuild --verbose
+
+      - name: Upload addon
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamaudiofilter-node-windows-x64
+          path: native/build/Release/streamaudiofilter.node
+          if-no-files-found: warn
+
+      # Same tests as on Linux, but compiled by cl.exe: catches MSVC specific
+      # problems (warnings as real issues, different standard library).
+      - name: Compile and run portable tests with MSVC
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSINSTALL=%%i
+          call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
+          mkdir build\msvc
+          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\dsp_tests.exe /Fo:build\msvc\ test\dsp_tests.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\engine_tests.exe /Fo:build\msvc\ test\engine_tests.cc src\app_identity.cc src\engine.cc src\mock\mock_backend.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc
+          if errorlevel 1 exit /b 1
+          build\msvc\dsp_tests.exe
+          if errorlevel 1 exit /b 1
+          build\msvc\engine_tests.exe

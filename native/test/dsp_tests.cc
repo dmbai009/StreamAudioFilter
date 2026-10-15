@@ -9,6 +9,12 @@
 
 #include <algorithm>
 #include <cmath>
+
+// MSVC needs this for M_PI; defining it here keeps the test buildable with
+// both cl.exe and g++/clang.
+#ifndef M_PI
+#    define M_PI 3.14159265358979323846
+#endif
 #include <cstdio>
 #include <cstring>
 #include <string>
