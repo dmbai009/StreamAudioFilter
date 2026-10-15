@@ -41,6 +41,7 @@
 #include "../dsp/convert.h"
 #include "../dsp/resampler.h"
 #include "audio_subformat.h"
+#include "com_iids.h"
 #include "com_ptr.h"
 #include "win_internal.h"
 #include "windows_backend.h"

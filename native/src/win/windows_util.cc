@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "../platform.h"
+#include "com_iids.h"
 #include "com_ptr.h"
 #include "audio_subformat.h"
 #include "win_internal.h"
