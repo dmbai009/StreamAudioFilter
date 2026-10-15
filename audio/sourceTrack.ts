@@ -84,6 +84,9 @@ export async function createFilteredTrack(options: FilteredTrackOptions): Promis
     let nextStartTime = 0;
     let stopped = false;
     let pullFailures = 0;
+    // Assigned right after the pump is started; stop() is re-entrant safe because
+    // every entry point guards on `stopped`.
+    let handle: FilteredTrack | null = null;
 
     // The requested rate was refused (rare): resample linearly.
     const ratio = stats.resampled ? context.sampleRate / requestedRate : 1;
@@ -162,6 +165,28 @@ export async function createFilteredTrack(options: FilteredTrackOptions): Promis
         options.onStats?.(stats);
     }
 
+    /**
+     * Ends the pipeline and says why.
+     *
+     * A dead pipeline must never look like a working filter: silently producing
+     * nothing would leave the panel claiming "filtering active" while viewers
+     * hear silence, and — worse — a later fallback to the raw system audio would
+     * look harmless. Stopping the track makes the failure visible to Discord and
+     * to the fail closed interceptor, which watches the share for exactly that.
+     */
+    function shutDown(message: string) {
+        if (stopped) return;
+        options.onError?.(message);
+        if (handle) {
+            handle.stop();
+            return;
+        }
+        stopped = true;
+        try {
+            track.stop();
+        } catch { }
+    }
+
     async function pump() {
         while (!stopped) {
             let chunks: Uint8Array[];
@@ -172,7 +197,15 @@ export async function createFilteredTrack(options: FilteredTrackOptions): Promis
             } catch (error) {
                 pullFailures++;
                 options.onError?.(`ошибка получения звука: ${(error as Error).message}`);
-                if (pullFailures > MAX_PULL_FAILURES) break;
+                if (pullFailures > MAX_PULL_FAILURES) {
+                    // The pipeline is dead. Giving up silently would leave the
+                    // viewers with a track that never produces audio while the
+                    // panel still shows "filtering active", so the track is
+                    // ended instead: the interceptor sees it and reports that
+                    // the share has no filtered audio any more.
+                    shutDown(`фильтрованный звук остановлен: ${pullFailures} ошибок получения звука подряд`);
+                    break;
+                }
                 await new Promise(resolve => setTimeout(resolve, 50));
                 continue;
             }
@@ -199,9 +232,7 @@ export async function createFilteredTrack(options: FilteredTrackOptions): Promis
     // constraints on a synthetic track are meaningless, but Discord asks.
     patchTrack(track, stats);
 
-    void pump();
-
-    const handle: FilteredTrack = {
+    const created: FilteredTrack = {
         track,
         stats,
         stop() {
@@ -216,8 +247,12 @@ export async function createFilteredTrack(options: FilteredTrackOptions): Promis
             void context.close().catch(() => { });
         }
     };
+    handle = created;
 
-    return handle;
+    // Started last: from here on every failure path can close the whole pipeline.
+    void pump();
+
+    return created;
 }
 
 function patchTrack(track: MediaStreamTrack, stats: AudioPipelineStats) {
