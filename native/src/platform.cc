@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 
+#include "capture_group.h"
 #include "mock/mock_backend.h"
 
 #if defined(_WIN32)
@@ -31,29 +32,38 @@ std::unique_ptr<IAppEnumerator> createEnumerator(BackendKind kind, std::string& 
     if (kind == BackendKind::Auto || kind == BackendKind::Wasapi) return win::createSessionEnumerator(error);
 #else
     if (kind == BackendKind::Wasapi) {
-        error = "WASAPI доступен только в Windows";
+        error = "WASAPI is only available on Windows";
         return nullptr;
     }
 #endif
 
-    error = "нативный захват доступен только в Windows — включён тестовый режим";
+    error = "native capture is only available on Windows — test mode is on";
     return std::make_unique<mock::MockEnumerator>();
 }
 
 std::unique_ptr<ICaptureFactory> createCaptureFactory(BackendKind kind, std::string& error) {
-    if (kind == BackendKind::Mock) return std::make_unique<mock::MockCaptureFactory>();
+    if (kind == BackendKind::Mock) {
+        return std::make_unique<GroupingCaptureFactory>(std::make_unique<mock::MockCaptureFactory>());
+    }
 
 #if defined(_WIN32)
-    if (kind == BackendKind::Auto || kind == BackendKind::Wasapi) return win::createCaptureFactory(error);
+    if (kind == BackendKind::Auto || kind == BackendKind::Wasapi) {
+        auto inner = win::createCaptureFactory(error);
+        if (!inner) return nullptr;
+        // One application can be started twice: the grouping factory captures
+        // each of its process trees and mixes them into the one stream the
+        // engine, the UI and the stream limit expect.
+        return std::make_unique<GroupingCaptureFactory>(std::move(inner));
+    }
 #else
     if (kind == BackendKind::Wasapi) {
-        error = "WASAPI доступен только в Windows";
+        error = "WASAPI is only available on Windows";
         return nullptr;
     }
 #endif
 
-    error = "нативный захват доступен только в Windows — включён тестовый режим";
-    return std::make_unique<mock::MockCaptureFactory>();
+    error = "native capture is only available on Windows — test mode is on";
+    return std::make_unique<GroupingCaptureFactory>(std::make_unique<mock::MockCaptureFactory>());
 }
 
 #if defined(_WIN32)
@@ -68,20 +78,20 @@ SupportInfo probeSupport() {
     SupportInfo info;
     info.supported = false;
     info.os = describePlatform();
-    info.reason = "Фильтрация по приложениям возможна только в Windows 10 (сборка 20348+) и Windows 11.";
-    info.detail = "Сейчас работает тестовый режим: звук генерируется сигнал-генератором.";
-    info.checks.push_back("Платформа не Windows: WASAPI недоступен");
-    info.checks.push_back("Тестовый режим доступен всегда (нужен только для проверки интерфейса)");
+    info.reason = "Capturing the audio of individual applications only works on Windows (it needs WASAPI process loopback).";
+    info.detail = "Test mode is active: the audio is produced by a signal generator.";
+    info.checks.push_back("The platform is not Windows: WASAPI is unavailable");
+    info.checks.push_back("Test mode is always available (it only exercises the interface)");
     return info;
 }
 
 std::string describePlatform() {
 #    if defined(__APPLE__)
-    return "macOS (тестовый режим)";
+    return "macOS (test mode)";
 #    elif defined(__linux__)
-    return "Linux (тестовый режим)";
+    return "Linux (test mode)";
 #    else
-    return "не Windows (тестовый режим)";
+    return "not Windows (test mode)";
 #    endif
 }
 

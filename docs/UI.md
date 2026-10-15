@@ -1,70 +1,88 @@
-# Интерфейс: четыре точки входа
+# The interface: four entry points
 
-Все панели рисуют один и тот же компонент (`ui/FilterControls.tsx`), поэтому состояние не может
-разойтись: переключили приложение в поповере у микрофона — то же самое сразу видно в настройках.
+Every panel draws the same component (`ui/FilterControls.tsx`), so the state cannot drift apart:
+switching an application in the popover next to the microphone is immediately visible in the settings.
 
-| № | Где | Что это | Как отключить |
+| # | Where | What it is | How to switch it off |
 |---|---|---|---|
-| 1 | Настройки → Плагины → StreamAudioFilter | полная панель: режим, список, состояние, ошибки, диагностика | — (это штатное место) |
-| 2 | Кнопка рядом с микрофоном и наушниками внизу окна | компактный поповер с тем же списком | настройка «Кнопка рядом с микрофоном» |
-| 3 | Плавающее окно внутри Discord | 400×… панель поверх клиента, появляется сама при старте трансляции | настройка «Плавающая панель»; свернуть/развернуть кнопкой в заголовке, скрыть — крестиком |
-| 4 | Vencord Toolbox | два пункта: «показать панель», «сбросить фильтры» | выключить Toolbox |
+| 1 | Settings → Plugins → StreamAudioFilter | the full panel: mode, list, state, errors, diagnostics | — (this is the standard place) |
+| 2 | A button next to the microphone and headphones at the bottom of the window | a compact popover with the same list | the "button next to the microphone" setting |
+| 3 | A floating window inside Discord | a 400×… panel on top of the client, appearing by itself when a share starts | the "floating panel" setting; collapse/expand with the button in its title bar, hide with the cross |
+| 4 | Vencord Toolbox | two entries: "show the panel", "reset the filters" | switch the Toolbox off |
 
-## Полная панель
+## What the panel says about the audio the viewers get
+
+The audio state is not the same thing as the filter state, and the panel shows exactly what the viewers
+really receive:
+
+| Status line | When | What happens then |
+|---|---|---|
+| "Sharing: audio sent for N apps" | the filter was applied | the viewers hear our mix |
+| "Stream audio is off: filtering could not be applied" | the filter did not work | the system audio is **removed** from the share and a red card explains why |
+| "Sending unfiltered system audio" | the "Send plain system audio when filtering is unavailable" setting is on | the audio of Discord as usual, but with a warning |
+| "Watching applications" / "Ready" | no share is running | nothing is captured at all |
+
+The diagnostics section carries the same information in its own "Audio at the viewers" row, with the
+reason (for example "the native addon was not found") in the row below. That is deliberate: the state
+"the filter does not work" must not be mistaken for "the filter works" on the strength of a switch alone.
+
+## The full panel
 
 ```
-Звук трансляции
-Выберите, какие приложения слышат зрители во время демонстрации экрана. …
+Stream audio
+Choose which applications the viewers hear while you share your screen. …
 
-Наблюдение за приложениями                       ← состояние
-Windows 11 (сборка 26100) · захват: wasapi · 48000 Гц · задержка буфера ~60 мс
+Watching applications                            ← state
+Windows 11 (build 26100) · capture: wasapi · 48000 Hz · buffer delay ~60 ms
 
-[ Всё, кроме выбранного ] [ Только выбранные ]   [ Обновить список ] [ Сбросить фильтры ]
+[ Everything except excluded ] [ Only included ]   [ Refresh list ] [ Reset filters ]
 
-СЕКЦИЯ «Сейчас воспроизводят звук» ─────────────────────────── 3
-  [icon]  Google Chrome          передан зрителям · chrome.exe · 48 кГц   ▮▮▮▯  передаётся  (●)
-  [icon]  Dota 2                 передан зрителям · dota2.exe            ▮▮▯▯  передаётся  (●)
-  [icon]  Spotify               исключено из трансляции · Spotify.exe    ▮▮▮▮  исключено   (○)
+SECTION "Currently playing audio" ─────────────────────────── 3
+  [icon]  Google Chrome          sent to the viewers · chrome.exe · 48 kHz   ▮▮▮▯  sent       (●)
+  [icon]  Dota 2                 sent to the viewers · dota2.exe            ▮▮▯▯  sent       (●)
+  [icon]  Spotify                excluded from the share · Spotify.exe      ▮▮▮▮  excluded   (○)
 
-СЕКЦИЯ «Запущены, но молчат» ───────────────────────────────── 1
-  [icon]  Telegram              сейчас не воспроизводит звук              ▯▯▯▯  нет звука   (●)
+SECTION "Running, but silent" ─────────────────────────────── 1
+  [icon]  Telegram               not playing audio right now                ▯▯▯▯  no audio   (●)
 
-СЕКЦИЯ «Сохранённые правила (приложение закрыто)» ──────────── 1
-  [icon]  Discord (голосовой канал)  Приложение закрыто · по умолчанию исключено…   (○)
+SECTION "Saved rules (application closed)" ────────────────── 1
+  [icon]  Discord (voice call)   Application closed · excluded by default…    (○)
 
-Не видишь нужное приложение? Запусти в нём воспроизведение звука и обнови список.
-Настройка действует только на то, что слышат зрители: ваш собственный звук не меняется.
+Cannot see the application you need? Start playing audio in it, then refresh the list.
+The setting only affects what the viewers hear: your own audio stays as it is.
 
-▸ Диагностика и подробности
+▸ Diagnostics and details
 ```
 
-Состояния строки: **передаётся** (зелёный), **исключено**, **нет звука**, **ожидание звука**
-(включено, но приложение молчит), **ошибка**, **недоступно**. Индикатор рядом с названием — уровень
-звука приложения в последнем блоке микса (дёшево: значение уже считается для лимитера).
+The states of a row: **sent** (green), **excluded**, **no audio**, **waiting for audio** (switched on
+but the application is silent), **error**, **unavailable**. The indicator next to the name is the
+application's level in the last mixed block (cheap: the value is already computed for the limiter).
 
-## Почему нет кнопки в окне запуска трансляции
+## Why there is no button in the share launch window
 
-Отдельно, потому что это было в пожеланиях.
+Separately, because it was part of the wish list.
 
-* Окно запуска трансляции и панель уже идущей трансляции — внутренние компоненты Discord. У них нет
-  ни публичного API, ни стабильных селекторов; единственный способ встроить туда кнопку — патчить
-  код по совпадению подстрок, которые Discord меняет между сборками.
-* Цена ошибки высока: неудачный патч может сломать именно то окно, через которое запускается
-  демонстрация, а отладить это на чужой машине почти невозможно.
-* Поэтому выбран предсказуемый путь: **панель приходит к пользователю сама в нужный момент**. Как
-  только Discord запрашивает звук демонстрации, плагин поднимает плавающее окно (если включено) и
-  подсвечивает состояние в кнопке у микрофона. Функционально это то же самое действие — изменить
-  состав звука на лету, — но не зависит от внутренностей клиента.
-* Если в будущем у Discord появится стабильный API для этих экранов, панель можно добавить туда без
-  переделки остального кода: весь интерфейс — один компонент, которому всё равно, где его отрисовали.
+* The screen share launch window and the panel of a running share are internal Discord components. They
+  have neither a public API nor stable selectors; the only way to put a button there is to patch code by
+  matching substrings that Discord changes between builds.
+* The price of a mistake is high: a bad patch can break the very window a share is started from, and
+  debugging that on somebody else's machine is close to impossible.
+* So a predictable route was chosen: **the panel comes to the user at the right moment**. As soon as
+  Discord asks for the screen share audio, the plugin raises the floating window (if enabled) and
+  highlights the state on the button next to the microphone. Functionally it is the same action —
+  changing the composition of the audio on the fly — but it does not depend on the internals of the
+  client.
+* If Discord ever grows a stable API for those screens, the panel can be added there without touching
+  the rest of the code: the whole interface is one component that does not care where it is rendered.
 
-## Плавающее окно
+## The floating window
 
-* перетаскивается за заголовок, позиция не запоминается между запусками (сознательно: экраны у всех
-  разные);
-* сворачивается до полоски «Звук трансляции · 3 захв.» — по умолчанию **само** сворачивается, когда
-  идёт трансляция, чтобы не попадать в кадр при демонстрации монитора (настройка
-  «Сворачивать плавающую панель, пока идёт трансляция»);
-* крестик не только скрывает окно, но и выключает настройку, чтобы панель не вернулась неожиданно;
-* при демонстрации экрана в кадр может попадать любой интерфейс Discord — это поведение клиента,
-  а не плагина, поэтому панель по умолчанию минимальна.
+* dragged by its title bar, the position is not remembered between launches (deliberately: screens
+  differ);
+* collapses to the strip "Stream audio · 3 cap." — it collapses **by itself** while a share is running
+  so that it does not end up in the frame when the whole monitor is shared (the "collapse the floating
+  panel while a share is running" setting);
+* the cross does not only hide the window, it also switches the setting off so that the panel does not
+  come back unexpectedly;
+* while a screen is shared, any part of the Discord interface can end up in the frame — that is the
+  behaviour of the client, not of the plugin, which is why the panel is minimal by default.

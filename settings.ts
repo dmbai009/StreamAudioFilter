@@ -17,47 +17,53 @@ import { OptionType } from "@utils/types";
 export const settings = definePluginSettings({
     filterEnabled: {
         type: OptionType.BOOLEAN,
-        description: "Фильтровать звук демонстрации экрана (иначе передаётся обычный системный звук)",
+        description: "Filter the screen share audio (otherwise plain system audio is sent)",
         default: true
+    },
+    fallbackUnfiltered: {
+        type: OptionType.BOOLEAN,
+        description: "Send plain system audio when filtering is unavailable. The viewers will hear every application — "
+            + "this is off by default: without it the plugin removes the share audio instead of substituting unfiltered audio",
+        default: false
     },
     showAccountPanelButton: {
         type: OptionType.BOOLEAN,
-        description: "Кнопка «Звук трансляции» рядом с кнопками микрофона внизу окна",
+        description: "A “Stream audio” button next to the microphone buttons at the bottom of the window",
         default: true
     },
     showFloatingPanel: {
         type: OptionType.BOOLEAN,
-        description: "Плавающая панель со списком приложений",
+        description: "A floating panel with the list of applications",
         default: true
     },
     collapseDuringStream: {
         type: OptionType.BOOLEAN,
-        description: "Сворачивать плавающую панель, пока идёт трансляция",
+        description: "Collapse the floating panel while a share is running",
         default: true
     },
     bufferMs: {
         type: OptionType.SLIDER,
-        description: "Запас звукового буфера. Больше — устойчивее, меньше — ниже задержка",
+        description: "Audio buffer headroom. More is steadier, less means a lower delay",
         markers: [30, 45, 60, 90, 120, 180],
         default: 60,
         stickToMarkers: false
     },
     maxStreams: {
         type: OptionType.SLIDER,
-        description: "Сколько приложений захватывать одновременно",
+        description: "How many applications to capture at the same time",
         markers: [4, 8, 12, 16, 24, 32],
         default: 12,
         stickToMarkers: true
     },
     nativeModulePath: {
         type: OptionType.STRING,
-        description: "Путь к streamaudiofilter.node, если модуль собран в нестандартном месте",
+        description: "Path to streamaudiofilter.node if the addon was built somewhere else",
         default: "",
-        placeholder: "C:\\путь\\к\\streamaudiofilter.node"
+        placeholder: "C:\\path\\to\\streamaudiofilter.node"
     },
     testBackend: {
         type: OptionType.BOOLEAN,
-        description: "[Проверка] Тестовый режим: вместо захвата звука используется генератор сигнала",
+        description: "[Test] Test mode: a signal generator is used instead of real audio capture",
         default: false
     }
 });

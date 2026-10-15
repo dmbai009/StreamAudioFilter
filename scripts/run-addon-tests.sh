@@ -46,6 +46,7 @@ echo "== compiling the portable part of the addon with $CXX =="
 "$CXX" -std=c++17 -O1 -fPIC -shared -DNAPI_VERSION=8 -I"$INCLUDE" \
     -o "$OUT/streamaudiofilter.node" \
     "$ROOT/native/src/addon.cc" \
+    "$ROOT/native/src/capture_group.cc" \
     "$ROOT/native/src/engine.cc" \
     "$ROOT/native/src/app_identity.cc" \
     "$ROOT/native/src/platform.cc" \

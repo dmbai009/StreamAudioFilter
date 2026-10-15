@@ -56,7 +56,7 @@ public:
         });
 
         if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
-            error = "тайм-аут инициализации перечисления аудиосессий";
+            error = "timeout while initialising the audio session enumeration";
             stop();
             return false;
         }
@@ -93,7 +93,7 @@ public:
     bool consumeChangeFlag() override { return changed_.exchange(false); }
 
     std::string describe() const override {
-        return "WASAPI (IAudioSessionManager2 по всем активным устройствам вывода)";
+        return "WASAPI (IAudioSessionManager2 over every active output device)";
     }
 
 private:
@@ -123,9 +123,9 @@ private:
         std::string error;
         HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(deviceEnumerator_.put()));
         if (FAILED(expected)) {
-            error = formatHresult(expected, "не удалось инициализировать COM");
+            error = formatHresult(expected, "could not initialise COM");
         } else if (FAILED(hr)) {
-            error = formatHresult(hr, "не удалось создать MMDeviceEnumerator");
+            error = formatHresult(hr, "could not create MMDeviceEnumerator");
         } else {
             notification_ = ComPtr<SessionNotification>(new SessionNotification(&changed_));
             refresh(error);
@@ -194,7 +194,7 @@ private:
             if (info.sessionId.empty()) info.sessionId = std::to_string(pid) + ":" + std::to_string(i);
 
             if (info.isSystemSounds) {
-                info.displayName = "Звуки системы";
+                info.displayName = "System sounds";
                 info.exeName = "system";
             } else {
                 info.exePath = processImagePath(pid);
@@ -213,7 +213,7 @@ private:
             info.appKey = makeAppKey(info.exePath, info.exeName, aumid, info.isSystemSounds, pid);
 
             if (info.exePath.empty() && aumid.empty() && !info.isSystemSounds) {
-                info.notCapturableReason = "не удалось определить исполняемый файл процесса";
+                info.notCapturableReason = "the executable of the process could not be determined";
             }
 
             out.push_back(std::move(info));
@@ -248,7 +248,7 @@ private:
         ComPtr<IMMDeviceCollection> devices;
         HRESULT hr = deviceEnumerator_->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, devices.put());
         if (FAILED(hr)) {
-            error = formatHresult(hr, "не удалось перечислить устройства вывода");
+            error = formatHresult(hr, "could not enumerate the output devices");
             return;
         }
 

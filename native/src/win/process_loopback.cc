@@ -119,27 +119,34 @@ AudioFormat audioFormatFrom(const WAVEFORMATEX* format) {
 }
 
 std::string describeFormat(const WAVEFORMATEX* format) {
-    if (!format) return "неизвестный формат";
+    if (!format) return "unknown format";
     const AudioFormat parsed = audioFormatFrom(format);
     return std::to_string(parsed.sampleRate) + " Hz / " + std::to_string(parsed.channels) + " ch / "
         + std::string(toString(parsed.sample));
 }
 
 /**
- * Captures one application (its process tree) and delivers interleaved float32
- * stereo at the requested sample rate.
+ * Captures exactly one process tree and delivers interleaved float32 stereo at
+ * the requested sample rate.
+ *
+ * Windows' process loopback activation takes a single TargetProcessId, so this
+ * class handles one root process: request.rootPids.front(). An application
+ * started twice has several roots; GroupingCaptureFactory (portable, see
+ * capture_group.h) splits the request and sums the resulting captures, so no
+ * tree is captured twice and no instance is left out.
  */
 class ProcessLoopbackCapture : public ICaptureSource {
 public:
-    explicit ProcessLoopbackCapture(CaptureRequest request)
+    explicit ProcessLoopbackCapture(CaptureRequest request, std::string note = {})
         : request_(std::move(request))
-        , buffer_(static_cast<size_t>(request_.sampleRate) / 2, static_cast<size_t>(request_.channels)) {}
+        , buffer_(static_cast<size_t>(request_.sampleRate) / 2, static_cast<size_t>(request_.channels))
+        , note_(std::move(note)) {}
 
     ~ProcessLoopbackCapture() override { stop(); }
 
     bool start(std::string& error) override {
         if (running_.exchange(true)) {
-            error = "захват уже запущен";
+            error = "the capture is already running";
             return false;
         }
 
@@ -148,7 +155,7 @@ public:
         thread_ = std::thread([this, ready = std::move(ready)]() mutable { threadMain(std::move(ready)); });
 
         if (future.wait_for(std::chrono::milliseconds(kStartTimeoutMs)) != std::future_status::ready) {
-            error = "тайм-аут запуска захвата " + request_.displayName;
+            error = "timeout while starting the capture of " + request_.displayName;
             stop();
             return false;
         }
@@ -191,7 +198,8 @@ public:
 
     std::string lastError() const override {
         std::lock_guard<std::mutex> lock(mutex_);
-        return error_;
+        if (error_.empty()) return note_;
+        return note_.empty() ? error_ : error_ + " (" + note_ + ")";
     }
 
 private:
@@ -214,7 +222,7 @@ private:
 
         HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!completed) {
-            error = "не удалось создать событие активации";
+            error = "could not create the activation event";
             return E_FAIL;
         }
 
@@ -225,7 +233,7 @@ private:
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &activateParams, handler.get(), operation.put());
         if (SUCCEEDED(hr)) {
             if (WaitForSingleObject(completed, kStartTimeoutMs) != WAIT_OBJECT_0) {
-                error = "тайм-аут активации захвата процесса";
+                error = "timeout while activating the process capture";
                 hr = E_FAIL;
             } else {
                 HRESULT activateResult = E_FAIL;
@@ -237,10 +245,11 @@ private:
         }
 
         if (FAILED(hr) && error.empty()) {
-            error = formatHresult(hr, "не удалось активировать захват процесса " + std::to_string(targetPid_));
+            error = formatHresult(hr, "could not activate the capture of process " + std::to_string(targetPid_));
             if (hr == E_INVALIDARG || hr == E_NOTIMPL) {
-                error += " (похоже, эта сборка Windows не поддерживает захват отдельного процесса: нужна Windows 11 "
-                         "или Windows 10 сборки 20348 и новее)";
+                error += " (this Windows build rejected the activation of a per process capture; Windows 10 "
+                         "build 19041/2004 and newer do support it in practice, so the exact "
+                         "error code matters more than the build number)";
             }
         }
 
@@ -273,12 +282,12 @@ private:
         }
 
         if (FAILED(hr)) {
-            error = formatHresult(hr, "не удалось инициализировать захват " + request_.displayName);
+            error = formatHresult(hr, "could not initialise the capture of " + request_.displayName);
             return hr;
         }
 
         if (FAILED(hr = client->GetService(IID_PPV_ARGS(captureClient.put())))) {
-            error = formatHresult(hr, "не удалось получить IAudioCaptureClient");
+            error = formatHresult(hr, "could not obtain IAudioCaptureClient");
             return hr;
         }
 
@@ -308,13 +317,13 @@ private:
         stereoBuffer_.assign(resampler_ ? resampler_->maxOutputFor(frames) * request_.channels : frames * request_.channels, 0.0f);
 
         std::lock_guard<std::mutex> lock(mutex_);
-        format_ = describeFormat(format) + (needsConversion_ ? " (конвертация плагином)" : " (без конвертации)");
+        format_ = describeFormat(format) + (needsConversion_ ? " (converted by the plugin)" : " (no conversion)");
     }
 
     void setFormatDirect() {
         std::lock_guard<std::mutex> lock(mutex_);
         format_ = std::to_string(request_.sampleRate) + " Hz / " + std::to_string(request_.channels)
-            + " ch / f32 (напрямую от аудиодвижка)";
+            + " ch / f32 (straight from the audio engine)";
     }
 
     /** Converts an engine buffer and appends it to the ring buffer. */
@@ -369,8 +378,10 @@ private:
     HANDLE captureEvent_ = nullptr;
 
     mutable std::mutex mutex_;
+    /** Non fatal remark about the request itself, shown in the diagnostics. */
+    std::string note_;
     std::string error_;
-    std::string format_ = "не запущено";
+    std::string format_ = "not running";
     int latencyMs_ = -1;
 
     // Conversion state (only used on the capture thread).
@@ -393,21 +404,21 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
         captureEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     }
     if (!stopEvent_ || !captureEvent_) {
-        ready.set_value("не удалось создать события синхронизации захвата");
+        ready.set_value("could not create the synchronisation events of the capture");
         if (comOwned) CoUninitialize();
         return;
     }
 
     targetPid_ = request_.rootPids.empty() ? 0 : request_.rootPids.front();
     if (targetPid_ == 0) {
-        ready.set_value("не передан идентификатор процесса для захвата");
+        ready.set_value("no process id was passed for the capture");
         if (comOwned) CoUninitialize();
         return;
     }
 
     std::string error;
     if (FAILED(comExpected)) {
-        error = formatHresult(comExpected, "не удалось инициализировать COM в потоке захвата");
+        error = formatHresult(comExpected, "could not initialise COM in the capture thread");
         ready.set_value(error);
         return;
     }
@@ -424,16 +435,16 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
 
     if (SUCCEEDED(hr)) {
         hr = client->SetEventHandle(captureEvent_);
-        if (FAILED(hr)) error = formatHresult(hr, "не удалось привязать событие захвата");
+        if (FAILED(hr)) error = formatHresult(hr, "could not bind the capture event");
     }
 
     if (SUCCEEDED(hr)) {
         hr = client->Start();
-        if (FAILED(hr)) error = formatHresult(hr, "не удалось запустить захват");
+        if (FAILED(hr)) error = formatHresult(hr, "could not start the capture");
     }
 
     if (FAILED(hr)) {
-        if (error.empty()) error = formatHresult(hr, "не удалось запустить захват");
+        if (error.empty()) error = formatHresult(hr, "could not start the capture");
         setError(error);
         ready.set_value(error);
         if (comOwned) CoUninitialize();
@@ -459,10 +470,10 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
             if (hr == AUDCLNT_S_BUFFER_EMPTY) break;
             if (FAILED(hr)) {
                 if (hr == AUDCLNT_E_DEVICE_INVALIDATED || hr == AUDCLNT_E_RESOURCES_INVALIDATED) {
-                    setError(formatHresult(hr, "устройство вывода изменилось во время захвата"));
+                    setError(formatHresult(hr, "the output device changed during the capture"));
                     running_ = false;
                 } else if (hr != AUDCLNT_S_BUFFER_EMPTY) {
-                    setError(formatHresult(hr, "ошибка чтения буфера захвата"));
+                    setError(formatHresult(hr, "the capture buffer could not be read"));
                 }
                 break;
             }
@@ -477,19 +488,23 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
 }
 
 /**
- * Creates one capture per root process of the application.
+ * Creates a capture for one process tree.
  *
- * Most applications have exactly one root; a program started twice from the
- * same path has two, and both must be captured to hear both instances. The
- * engine only ever creates one capture per application, so no audio can be
- * captured (and therefore mixed) twice.
+ * Requests with several roots are split by GroupingCaptureFactory before they
+ * reach this factory (see capture_group.h), so one call always means one tree.
+ * The process tree filter covers the children of that root, which is why a
+ * single activation captures e.g. every process of Chrome.
  */
 class WasapiCaptureFactory : public ICaptureFactory {
 public:
     std::unique_ptr<ICaptureSource> create(const CaptureRequest& request) override {
         if (request.rootPids.empty()) return nullptr;
-        // Children are covered by the process tree filter, so capturing the
-        // first root is enough unless there are unrelated instances.
+        if (request.rootPids.size() > 1) {
+            // Should not happen: the grouping factory splits first. Capturing
+            // only the first tree would silently lose the other instances, so
+            // say it in the diagnostics instead of hiding it.
+            return std::make_unique<ProcessLoopbackCapture>(request, "a request with several root processes was not split");
+        }
         return std::make_unique<ProcessLoopbackCapture>(request);
     }
 

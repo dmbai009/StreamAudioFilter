@@ -77,7 +77,12 @@ public:
 struct CaptureRequest {
     std::string appKey;
     std::string displayName;
-    /** Root processes of the application; their children are included. */
+    /**
+     * Root processes of the application; the children of each root are included
+     * by the platform (process tree loopback). An application started twice has
+     * two roots: every one of them must be captured, and each of them exactly
+     * once — see capture_group.h.
+     */
     std::vector<uint32_t> rootPids;
     int sampleRate = 48000;
     int channels = 2;

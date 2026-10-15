@@ -4,7 +4,7 @@
 // Backends without any OS dependency.
 //
 //  1. They let the whole engine be unit tested on Linux/macOS/CI.
-//  2. They power the plugin's "тестовый режим" (signal generator) so the
+//  2. They power the plugin's "test mode" (signal generator) so the
 //     renderer side (stream injection) can be validated without WASAPI.
 
 #pragma once
@@ -45,7 +45,7 @@ public:
     std::vector<SessionInfo> enumerate() override;
     std::vector<ProcessNode> processes() override;
     bool consumeChangeFlag() override;
-    std::string describe() const override { return "mock (тестовый список приложений)"; }
+    std::string describe() const override { return "mock (test application list)"; }
 
     /** Replaces the whole scripted state. Marks a change for the engine. */
     void setApps(std::vector<App> apps);
@@ -59,10 +59,17 @@ private:
     bool running_ = false;
 };
 
-/** Produces a sine tone per captured application, so tests can check levels. */
+/**
+ * Produces a sine tone per captured process tree, so tests can check which
+ * instances really end up in the mix.
+ *
+ * The tone is derived from the root process id, not from the creation order:
+ * two instances of one application must be distinguishable regardless of when
+ * their capture was created.
+ */
 class MockCaptureSource : public ICaptureSource {
 public:
-    MockCaptureSource(std::string appKey, int sampleRate, int channels, double toneHz);
+    MockCaptureSource(std::string appKey, int sampleRate, int channels, double toneHz, uint32_t rootPid = 0);
     ~MockCaptureSource() override;
 
     bool start(std::string& error) override;
@@ -80,6 +87,7 @@ private:
     void threadMain();
 
     std::string appKey_;
+    uint32_t rootPid_ = 0;
     int sampleRate_;
     int channels_;
     double toneHz_;
@@ -101,11 +109,19 @@ class MockCaptureFactory : public ICaptureFactory {
 public:
     explicit MockCaptureFactory(double baseToneHz = 440.0) : baseToneHz_(baseToneHz) {}
 
+    /**
+     * Creates one source per request, i.e. per process tree. Multi root
+     * requests are split by GroupingCaptureFactory, so an application with
+     * several instances is captured instance by instance and mixed once.
+     */
     std::unique_ptr<ICaptureSource> create(const CaptureRequest& request) override;
-    std::string describe() const override { return "mock (сигнал-генератор)"; }
+    std::string describe() const override { return "mock (signal generator)"; }
 
-    /** Frequencies handed out, in creation order (diagnostics). */
+    /** Number of captures handed out (diagnostics and tests). */
     size_t createdSources() const { return created_.load(); }
+
+    /** Frequency of the tone used for a root process (tests). */
+    double toneForPid(uint32_t pid) const;
 
 private:
     std::atomic<size_t> created_ { 0 };

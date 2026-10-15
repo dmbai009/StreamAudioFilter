@@ -179,17 +179,26 @@ void Engine::applyPlan() {
         std::string error;
     };
     std::vector<Pending> pending;
+    bool replan = false;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto& group : groups) {
             const bool transmit = rules_.transmit(group.appKey) && group.capturable && !group.roots.empty();
             if (!transmit) continue;
-            if (streams_.count(group.appKey)) continue;
+
+            const auto existing = streams_.find(group.appKey);
+            if (existing != streams_.end()) {
+                // The capture is being restarted (or is still fading out):
+                // run the plan again once it is gone instead of waiting for
+                // the next periodic reconciliation.
+                if (existing->second->retired || existing->second->mix.gainTarget <= 0.0f) replan = true;
+                continue;
+            }
             if (std::any_of(pending.begin(), pending.end(), [&](const Pending& p) { return p.appKey == group.appKey; })) continue;
             if (pending.size() + streams_.size() >= options_.maxStreams) {
-                const std::string warning = "Достигнут предел одновременного захвата (" + std::to_string(options_.maxStreams)
-                    + " приложений). Часть звука не передаётся.";
+                const std::string warning = "The limit of simultaneous captures has been reached (" + std::to_string(options_.maxStreams)
+                    + " applications). Part of the audio is not sent.";
                 if (std::find(warnings_.begin(), warnings_.end(), warning) == warnings_.end()) warnings_.push_back(warning);
                 break;
             }
@@ -208,7 +217,7 @@ void Engine::applyPlan() {
         std::string error;
         auto source = factory_->create(request);
         if (!source || !source->start(error)) {
-            item.error = error.empty() ? "не удалось запустить захват" : error;
+            item.error = error.empty() ? "could not start the capture" : error;
             continue;
         }
         item.source = std::move(source);
@@ -222,17 +231,29 @@ void Engine::applyPlan() {
         // 1. Retire streams that must not be transmitted any more.
         for (auto& [key, stream] : streams_) {
             if (stream->retired) continue;
-            bool wanted = false;
-            for (const auto& group : groups) {
-                if (group.appKey == key && rules_.transmit(key) && group.capturable && !group.roots.empty()) {
-                    wanted = true;
+            const AppGroup* group = nullptr;
+            for (const auto& candidate : groups) {
+                if (candidate.appKey == key) {
+                    group = &candidate;
                     break;
                 }
             }
+
+            const bool wanted = group && rules_.transmit(key) && group->capturable && !group->roots.empty();
+
+            // One capture is bound to one set of process trees. When an
+            // application is started a second time (or one of its instances
+            // closes), that set changes: the capture is restarted so the new
+            // instance becomes audible and no instance is captured twice.
+            // Only this application is affected - the share, the other
+            // applications and the output stream keep running.
+            if (wanted && group->roots != stream->rootPids) {
+                stream->mix.gainTarget = 0.0f;
+                replan = true;
+                continue;
+            }
+
             if (!wanted) stream->mix.gainTarget = 0.0f;
-            // If the application is gone completely, fade out too.
-            const bool stillThere = std::any_of(groups.begin(), groups.end(), [&](const AppGroup& g) { return g.appKey == key; });
-            if (!stillThere) stream->mix.gainTarget = 0.0f;
         }
 
         // 2. Add newly started captures.
@@ -252,6 +273,7 @@ void Engine::applyPlan() {
             stream->appKey = item.appKey;
             stream->displayName = item.displayName;
             stream->rootPids = item.roots;
+            stream->instances = item.roots.size();
             stream->source = std::move(item.source);
             stream->mix.buffer = stream->source->buffer();
             stream->mix.key = item.appKey;
@@ -262,6 +284,13 @@ void Engine::applyPlan() {
             streams_[item.appKey] = std::move(stream);
             startErrors_.erase(item.appKey);
         }
+    }
+
+    if (replan) {
+        // A capture is fading out to be restarted with the new root set: run
+        // the plan again as soon as it is gone instead of waiting for the next
+        // regular reconciliation.
+        refreshRequested_ = true;
     }
 }
 
@@ -327,12 +356,14 @@ std::vector<AppView> Engine::apps() {
         view.running = true;
         view.transmitting = rules.active && rules.transmit(group.appKey) && group.capturable;
         view.peak = std::max(group.peak, 0.0f);
+        view.instances = group.roots.size();
 
         const auto streamIt = live.find(group.appKey);
         if (streamIt != live.end()) {
             StreamState* stream = streamIt->second;
             view.captured = !stream->retired && stream->mix.gainTarget > 0.0f;
             view.starvedFrames = stream->mix.starvedFrames;
+            if (stream->instances) view.instances = stream->instances;
             view.format = stream->source ? stream->source->formatDescription() : "";
             view.latencyMs = stream->source ? stream->source->latencyMs() : -1;
             if (stream->source) view.error = stream->source->lastError();

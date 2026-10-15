@@ -1,42 +1,41 @@
-# Установка
+# Installation
 
-Плагин состоит из двух частей:
+The plugin has two parts:
 
-* **TypeScript-часть** — обычный пользовательский плагин Vencord (`index.tsx` и папки рядом);
-* **нативный модуль** — `streamaudiofilter.node`, который собирается из папки `native/` на вашей
-  машине, потому что он работает с WASAPI напрямую.
+* **the TypeScript part** — an ordinary Vencord user plugin (`index.tsx` and the folders next to it);
+* **the native addon** — `streamaudiofilter.node`, built from the `native/` folder on your own machine,
+  because it talks to WASAPI directly.
 
-Первая часть ставится копированием, вторая — сборкой. Ничего не скачивается и не устанавливается
-автоматически.
+The first part is installed by copying, the second one by building. Nothing is downloaded or installed
+automatically.
 
-## 0. Что должно быть установлено
+## 0. What has to be installed
 
-| Компонент | Зачем | Как проверить |
+| Component | Why | How to check |
 |---|---|---|
-| Windows 10 сборки **20348+** или Windows 11 | захват звука отдельных приложений | `[Environment]::OSVersion.Version.Build` |
-| Discord Desktop (обычный, не Vesktop) | целевой клиент | — |
-| Node.js 18+ | сборка нативного модуля и Vencord | `node -v` |
-| Visual Studio Build Tools, рабочая нагрузка «Разработка классических приложений на C++» | компилятор MSVC | см. ниже |
-| Git, pnpm (входит в corepack) | сборка Vencord | `git --version`, `pnpm -v` |
+| Windows 10 version **2004 (build 19041)** or newer, or Windows 11 | capturing the audio of individual applications | `[Environment]::OSVersion.Version.Build` → must be ≥ 19041 |
+| Discord Desktop (the normal client, not Vesktop) | the target client | — |
+| Node.js 18+ | building the native addon and Vencord | `node -v` |
+| Visual Studio Build Tools with the "Desktop development with C++" workload | the MSVC compiler | see below |
+| Git, pnpm (part of corepack) | building Vencord | `git --version`, `pnpm -v` |
 
-Если сборка не нужна (например, у вас уже есть готовый `streamaudiofilter.node` от вашей же сборки
-на другой машине) — достаточно шагов 1, 5 и 6.
+If you do not need to build anything (for example because you already have a ready
+`streamaudiofilter.node` from your own build on another machine), steps 1, 5 and 6 are enough.
 
-Проверка компилятора:
+Checking the compiler:
 
 ```powershell
 & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest `
     -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
 ```
 
-Пусто → установите
-[Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/) с
-нагрузкой «Desktop development with C++».
+Empty → install
+[Build Tools for Visual Studio](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the
+"Desktop development with C++" workload.
 
-## 1. Получить Vencord из исходников
+## 1. Get Vencord from source
 
-Готовый установщик Vencord поставляется уже собранным, поэтому пользовательские плагины требуют
-своей сборки:
+The ready made Vencord installer ships compiled, which is why user plugins require your own build:
 
 ```powershell
 git clone https://github.com/Vencord/Vencord
@@ -45,84 +44,87 @@ corepack enable pnpm
 pnpm install --frozen-lockfile
 ```
 
-## 2. Положить плагин на место
+## 2. Put the plugin in place
 
 ```powershell
-# из папки, куда скачан/склонирован этот репозиторий
-xcopy /E /I /Y .\StreamAudioFilter  <путь-к>\Vencord\src\userplugins\StreamAudioFilter
+# from the folder this repository was downloaded/cloned into
+xcopy /E /I /Y .\StreamAudioFilter  <path-to>\Vencord\src\userplugins\StreamAudioFilter
 ```
 
-Важно: имя папки — `StreamAudioFilter`, она должна лежать внутри `src\userplugins`, и внутри неё
-обязателен `index.tsx` (он есть). Папки `native`, `docs`, `scripts`, `dev`, `tests` можно не
-копировать в Vencord — для работы плагина они не нужны, но и не мешают.
+Important: the folder must be called `StreamAudioFilter`, it must live inside `src\userplugins`, and it
+must contain `index.tsx` (it does). The folders `native`, `docs`, `scripts`, `dev` and `tests` do not
+have to be copied into Vencord — the plugin does not need them, but they do no harm either.
 
-## 3. Собрать нативный модуль
+## 3. Build the native addon
 
 ```powershell
-cd <путь-к>\StreamAudioFilter
+cd <path-to>\StreamAudioFilter
 powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1
 ```
 
-Скрипт:
+The script:
 
-1. проверяет наличие Node.js и компилятора и подсказывает ссылки, если чего-то нет;
-2. печатает команду, которую собирается выполнить, и спрашивает подтверждение
-   (используется `npx node-gyp`, то есть из npm приезжает только сборщик; компилятор и исходники —
-   ваши, ничего исполняемого из интернета не запускается);
-3. собирает `native/build/Release/streamaudiofilter.node`;
-4. **проверяет модуль**: загружает его в Node и печатает реальный результат проверки поддержки
-   (версия, сборка Windows, вердикт, причина, HRESULT при отказе).
+1. checks for Node.js and the compiler and prints links if something is missing;
+2. prints the command it is about to run and asks for confirmation (it uses `npx node-gyp`, so npm only
+   delivers the build tool; the compiler and the sources are yours, nothing executable is fetched from
+   the internet);
+3. builds `native/build/Release/streamaudiofilter.node`;
+4. **verifies the addon**: it loads it into Node and prints the real result of the support check
+   (version, Windows build, verdict, reason, the HRESULT of a refusal).
 
-Чтобы сразу разложить готовый модуль куда нужно:
+To put the finished addon where it belongs in one go:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1 -Yes `
     -Destination "$env:APPDATA\Vencord\streamAudioFilter\native"
 ```
 
-## 4. Где плагин ищет модуль
+## 4. Where the plugin looks for the addon
 
-По порядку:
+In order:
 
-1. путь из настройки **«Путь к streamaudiofilter.node»** (если задан);
+1. the path from the **"Path to streamaudiofilter.node"** setting (if it is set);
 2. `%APPDATA%\Vencord\streamAudioFilter\native\streamaudiofilter.node`
-   (и `…\native\build\Release\streamaudiofilter.node`);
-3. путь рядом со сборкой `dist` (для дерева исходников Vencord);
-4. любой `*.node` в `%APPDATA%\Vencord\streamAudioFilter`.
+   (and `…\native\build\Release\streamaudiofilter.node`);
+3. a path next to the built `dist` (for a Vencord source tree);
+4. any `*.node` in `%APPDATA%\Vencord\streamAudioFilter`.
 
-Кнопка **«Открыть каталог»** в разделе «Диагностика» создаёт и открывает нужную папку, а сама
-диагностика показывает **все** проверенные пути и причину ошибки загрузки, если модуль не подошёл.
+The **"Open folder"** button in the diagnostics section creates and opens the right folder, and the
+diagnostics themselves show **every** path that was tried plus the reason the load failed, if the addon
+did not fit.
 
-## 5. Собрать и внедрить Vencord
+## 5. Build and inject Vencord
 
 ```powershell
 pnpm build
-pnpm inject     # или запустите VencordInstaller и выберите свою установку Discord
+pnpm inject     # or run VencordInstaller and pick your Discord installation
 ```
 
-Поскольку плагин добавляет патч (кнопка рядом с микрофоном), после включения плагина Discord нужно
-перезапустить — Vencord сам предупредит об этом.
+Because the plugin adds a patch (the button next to the microphone), Discord has to be restarted after
+the plugin is enabled — Vencord warns about that itself.
 
-## 6. Первый запуск и проверка
+## 6. First run and check
 
-1. Откройте **Настройки → Плагины**, включите **StreamAudioFilter**.
-2. Откройте **Настройки → Плагины → StreamAudioFilter → панель плагина**.
-3. Нажмите **«Проверить поддержку»** в разделе «Диагностика»:
-   * «поддержка: да» — всё готово;
-   * «поддержка: нет» с кодом и текстом — система не умеет process loopback (см. `LIMITATIONS.md`)
-     либо модуль не загрузился (тогда рядом будут перечислены проверенные пути).
-4. Включите в приложении музыку и нажмите **«Обновить список»** — приложение появится в разделе
-   «Сейчас воспроизводят звук».
-5. Запустите демонстрацию экрана со звуком и убедитесь, что в панели написано «фильтрация активна»
-   и что зрители слышат ожидаемое.
+1. Open **Settings → Plugins** and enable **StreamAudioFilter**.
+2. Open **Settings → Plugins → StreamAudioFilter → the plugin panel**.
+3. Press **"Check support"** in the diagnostics section:
+   * "supported: yes" — everything is ready;
+   * "supported: no" with a code and a text — either the system cannot do process loopback (see
+     `LIMITATIONS.md`) or the addon did not load (then every path that was tried is listed next to it).
+4. Start some music in an application and press **"Refresh list"** — the application appears in the
+   "Currently playing audio" section.
+5. Start a screen share with audio and make sure the panel says "filtering active" and that the viewers
+   hear what you expect.
 
-## Частые проблемы
+## Common problems
 
-| Симптом | Причина и решение |
+| Symptom | Cause and solution |
 |---|---|
-| «Нативный модуль не найден» | модуль не собран или лежит не там. Панель показывает список проверенных путей; нажмите «Открыть каталог» и положите файл туда |
-| Модуль найден, но не загружается | почти всегда несовпадение разрядности или отсутствие Node-API: соберите заново командой из шага 3 (сборка под x64) |
-| «Фильтрация недоступна в этой системе» | Windows 10 сборки ниже 20348 — объективное ограничение ОС |
-| Трансляция идёт, но в панели «фильтрация не применена» | Discord не запросил звук (выключено «Передавать звук»), либо запрос ушёл не через тот API. Второе — сигнал о несовместимости с версией Discord: пришлите содержимое раздела «Диагностика» |
-| Зрители слышат тишину, хотя панель показывает передачу | проверьте, что в микшере Discord для демонстрации выбран «Звук» и не выставлена громкость 0 у приложения в системном микшеере |
-| Щелчки/пропуски | увеличьте «Запас звукового буфера» (настройки плагина) до 90–120 мс |
+| "The native addon was not found" | the addon was not built or lies somewhere else. The panel lists every path it tried; press "Open folder" and put the file there |
+| The addon is found but does not load | almost always a bitness mismatch or a missing Node-API: build it again with the command from step 3 (an x64 build) |
+| "Filtering is not available on this system" | Windows 10 older than version 2004 (build < 19041): the operating system itself has no per process capture. Update Windows. From 2004 on, the check is a real activation attempt and the diagnostics show its result or its error code |
+| A share is running, but the panel says "filtering not applied" | Discord did not ask for the audio ("Share audio" is off), or the request went through a different API. The latter signals an incompatibility with this Discord version: please send the contents of the diagnostics section |
+| The viewers hear silence although the panel shows that audio is being sent | check that "Audio" is selected for the share in the Discord mixer and that the application is not muted or at volume 0 in the Windows volume mixer |
+| The panel says "Stream audio is off: filtering could not be applied" and the viewers hear no share audio | this is the leak protection: the filter did not work, so the unfiltered audio was not sent. The reason is in the same card and in the diagnostics section. If you cannot live with that, enable the "Send plain system audio when filtering is unavailable" setting |
+| The panel says "Sending unfiltered system audio" | that setting is on and filtering is currently unavailable — the viewers hear every application |
+| Clicks or dropouts | raise the "audio buffer headroom" in the plugin settings to 90–120 ms |

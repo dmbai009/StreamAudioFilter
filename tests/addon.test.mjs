@@ -26,9 +26,9 @@ const modulePath = resolve(process.argv[2] ?? "native/build/Release/streamaudiof
 const addon = require(modulePath);
 
 const APPS = [
-    { appKey: "exe:game", displayName: "Игра", exePath: "C:\\Games\\game.exe", exeName: "game.exe", pid: 100, parentPid: 1, playing: true, capturable: true },
-    { appKey: "exe:music", displayName: "Плеер", exePath: "C:\\Music\\player.exe", exeName: "player.exe", pid: 200, parentPid: 1, playing: true, capturable: true },
-    { appKey: "exe:chat", displayName: "Чат", exePath: "C:\\Chat\\chat.exe", exeName: "chat.exe", pid: 300, parentPid: 1, playing: false, capturable: true }
+    { appKey: "exe:game", displayName: "Game", exePath: "C:\\Games\\game.exe", exeName: "game.exe", pid: 100, parentPid: 1, playing: true, capturable: true },
+    { appKey: "exe:music", displayName: "Player", exePath: "C:\\Music\\player.exe", exeName: "player.exe", pid: 200, parentPid: 1, playing: true, capturable: true },
+    { appKey: "exe:chat", displayName: "Chat", exePath: "C:\\Chat\\chat.exe", exeName: "chat.exe", pid: 300, parentPid: 1, playing: false, capturable: true }
 ];
 
 const json = value => JSON.parse(value);
@@ -90,7 +90,7 @@ test("the whole pipeline works end to end on the test backend", async () => {
     const apps = json(addon.apps());
     assert.equal(apps.length, 3);
     const game = apps.find(app => app.appKey === "exe:game");
-    assert.equal(game.displayName, "Игра");
+    assert.equal(game.displayName, "Game");
     assert.ok(["transmitting", "silent", "excluded"].includes(game.state));
 
     // Nothing is captured while the capture gate is closed ...
@@ -154,7 +154,7 @@ test("the whole pipeline works end to end on the test backend", async () => {
     assert.equal(modeB.find(app => app.appKey === "exe:game").transmitting, false);
 
     // A new application appears while the stream is running.
-    addon.setMockApps([...APPS, { appKey: "exe:new", displayName: "Новое", exePath: "C:\\New\\new.exe", pid: 400, parentPid: 1, playing: true, capturable: true }]);
+    addon.setMockApps([...APPS, { appKey: "exe:new", displayName: "New app", exePath: "C:\\New\\new.exe", pid: 400, parentPid: 1, playing: true, capturable: true }]);
     addon.setRules({ mode: 0, overrides: {}, active: true });
     await waitUntil(() => json(addon.apps()).length === 4, "a new application shows up");
     const withNew = json(addon.apps());
@@ -178,6 +178,41 @@ test("the whole pipeline works end to end on the test backend", async () => {
     assert.equal(json(addon.stop()).ok, true);
     assert.equal(json(addon.stats()).running, false);
     assert.equal(addon.readPcm(480).byteLength, 0);
+});
+
+test("an application started twice is one entry with two captured instances", async () => {
+    assert.equal(json(addon.start({ sampleRate: 48000, blockMs: 10, maxStreams: 8, outputBufferMs: 200, backend: "mock" })).ok, true);
+
+    // Same application (same executable), two independent process trees.
+    const game = APPS[0];
+    addon.setMockApps([
+        game,
+        { ...game, pid: 302 }
+    ]);
+    addon.refresh();
+    addon.setRules({ mode: 1, overrides: { "exe:game": true }, active: true });
+
+    await waitUntil(() => {
+        const listed = json(addon.apps());
+        return listed.length === 1 && listed[0].instances === 2;
+    }, "both instances are grouped into one entry");
+
+    const listed = json(addon.apps());
+    assert.equal(listed.length, 1, "one application, not two entries");
+    assert.equal(listed[0].instances, 2, "the panel knows that two instances are summed");
+    assert.equal(listed[0].captured, true);
+    assert.match(listed[0].format, /instance/, `format describes both trees: ${listed[0].format}`);
+
+    // One stream for the application: the two instances are summed inside the
+    // capture, so the engine does not mix the same application twice.
+    await waitUntil(() => json(addon.stats()).activeStreams === 1, "exactly one stream for the application");
+    await waitUntil(() => {
+        const pcm = addon.readPcm(4800);
+        return pcm.byteLength > 0 && peakOf(pcm) > 0.05;
+    }, "the summed audio of both instances is transmitted");
+
+    addon.setRules({ mode: 0, overrides: {}, active: false });
+    addon.stop();
 });
 
 test("bad arguments are clamped instead of breaking the engine", async () => {

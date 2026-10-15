@@ -177,4 +177,4 @@ Write-Host "       %APPDATA%\Vencord\streamAudioFilter\native\streamaudiofilter.
 Write-Host "     (the plugin's diagnostics section shows the exact folder and can open it;"
 Write-Host "      a different location can be set in the plugin settings)"
 Write-Host "  2. Restart Discord, enable StreamAudioFilter in Vencord's plugin list."
-Write-Host "  3. Open the plugin panel and press 'Обновить список'."
+Write-Host "  3. Open the plugin panel and press 'Refresh list'."

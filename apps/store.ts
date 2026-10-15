@@ -49,7 +49,17 @@ function initialState(): StoreState {
         apps: [],
         stats: null,
         icons: {},
-        stream: { active: false, filtering: false, reason: "", startedAt: 0, underruns: 0, pipelinedMs: 0, sampleRate: SAMPLE_RATE },
+        stream: {
+            active: false,
+            filtering: false,
+            reason: "",
+            audio: "none",
+            audioReason: "",
+            startedAt: 0,
+            underruns: 0,
+            pipelinedMs: 0,
+            sampleRate: SAMPLE_RATE
+        },
         panelsOpen: 0,
         engineRunning: false,
         loading: false,
@@ -88,7 +98,7 @@ class Store {
         try {
             raw = await DataStore.get(STORE_KEY);
         } catch (error) {
-            this.set({ lastError: `не удалось прочитать сохранённые правила: ${(error as Error).message}` });
+            this.set({ lastError: `could not read the saved rules: ${(error as Error).message}` });
         }
 
         const environment = this.state.environment ?? await Native.getEnvironment().catch(() => null);
@@ -109,7 +119,7 @@ class Store {
         try {
             await DataStore.set(STORE_KEY, this.state.rules);
         } catch (error) {
-            this.set({ lastError: `не удалось сохранить правила: ${(error as Error).message}` });
+            this.set({ lastError: `could not save the rules: ${(error as Error).message}` });
         }
     }
 
@@ -171,7 +181,7 @@ class Store {
         this.set({ loading: false });
 
         if (!result.ok) {
-            this.set({ engineRunning: false, lastError: result.error ?? "не удалось запустить аудиодвижок" });
+            this.set({ engineRunning: false, lastError: result.error ?? "could not start the audio engine" });
             return false;
         }
 
@@ -235,7 +245,7 @@ class Store {
             this.track = handle;
             return handle.track;
         } catch (error) {
-            const reason = `не удалось создать звуковой поток: ${(error as Error).message}`;
+            const reason = `could not create the audio stream: ${(error as Error).message}`;
             this.set({ lastError: reason, stream: { ...this.state.stream, filtering: false, active: false, reason } });
             return null;
         }
@@ -251,13 +261,33 @@ class Store {
         this.startPolling();
     }
 
+    /**
+     * The interceptor reports what the viewers actually receive. This is the
+     * state the panel shows, so a failed filter can not look like a working one.
+     */
+    onAudioState(state: StreamStatus["audio"], reason: string): void {
+        this.set({ stream: { ...this.state.stream, audio: state, audioReason: reason } });
+    }
+
     /** Called when the share ends (or the plugin is stopped). */
     stopFiltering(reason = ""): void {
         if (this.track) {
             this.track.stop();
             this.track = null;
         }
-        this.set({ stream: { active: false, filtering: false, reason, startedAt: 0, underruns: 0, pipelinedMs: 0, sampleRate: SAMPLE_RATE } });
+        this.set({
+            stream: {
+                active: false,
+                filtering: false,
+                reason,
+                audio: "none",
+                audioReason: "",
+                startedAt: 0,
+                underruns: 0,
+                pipelinedMs: 0,
+                sampleRate: SAMPLE_RATE
+            }
+        });
         void this.applyRules();
         this.scheduleIdleShutdown();
     }
@@ -305,7 +335,7 @@ class Store {
      * Re-reads the application list and the engine statistics.
      *
      * @param force ask the native engine to enumerate again instead of returning
-     *              the list it already has (used by "Обновить список")
+     *              the list it already has (used by "Refresh list")
      */
     async refresh(force = false): Promise<void> {
         if (this.refreshing) return;
