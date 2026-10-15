@@ -108,17 +108,24 @@ engine delivers packets at the correct rate. The build number is not what stood 
 non-agile completion handler was. (The `[data]` numbers alone do not prove that a specific application's
 audio is inside those packets: see below and [PROBE.md](PROBE.md).)
 
-Two further statements that the first run corrected, both now built into the probe:
+Three further statements that the first run corrected, all three now built into the probe:
 
 * **"0 frames flagged silent" is not evidence of audio.** A process loopback stream does not set the
   silent flag, so the number says nothing — the count of non-zero samples and the peak do. That is why
   the plugin's capability walk and the probe now measure the samples instead of trusting the flag.
-* **A 1 kHz tone played by the capturing program is not a valid end-to-end test.** The probe captures its
-  own process tree, and the audio of the process that performs the capturing is not guaranteed to appear
-  in its own capture — the first run reported a tone magnitude of `0.000007` while the capture itself was
-  working. The probe reports that outcome as a limitation of the test (and never as a failed capture),
-  and the decisive check of that path is now `--system`, a classic WASAPI loopback of the whole system
-  audio in which the tone *must* come back.
+* **A tone the probe plays itself is the weakest form of the content check.** With one process as both
+  the source and the observer, a missing tone cannot be told apart from a tone that never reached the mix
+  of the captured device, so the probe reports that case as inconclusive and never as a failed capture.
+  The decisive version is `--spawn-tone`: it starts a **second copy of the probe** that plays 1 kHz and
+  then captures *it* — a different process, so its audio has to appear in the capture.
+* **The first run's "the tone was NOT found" reading was a defect in the probe's own measurement, not a
+  property of the capture.** The captured buffer is interleaved (stereo), and the tone search analysed it
+  as if it were mono; doubling every sample moves a 1 kHz tone to 500 Hz, so a search at 1 kHz finds
+  nothing — which is exactly the `0.000025` (system loopback) and `0.000007` (process loopback) of that
+  run. `saf::dsp::toneMagnitude` now takes the channel count and downmixes before the search, and the
+  portable tests pin the difference down: the same stereo buffer reads `0.1999` at 500 Hz and `0.0000` at
+  1 kHz when it is treated as mono. Everything else that run proved (activation, format, `Start`, the
+  packet rate, and the `--process chrome.exe` capture with 764032 non-zero samples) is unaffected.
 
 Checking a specific machine without Discord: **`process-loopback-probe.exe`**
 
@@ -126,7 +133,8 @@ The repository also ships a standalone probe (built by CI, attached to every rel
 [PROBE.md](PROBE.md)). It performs the same activation with the same agile handler, prints every stage
 — COM apartment, handler agility, the activation call, the callback, `GetActivateResult`,
 `QueryInterface`, format negotiation, `Start`, the packets themselves, the teardown — and can play a
-1 kHz tone from its own process to show that PCM really arrives. It writes nothing to disk, installs
+1 kHz tone either from its own process (`--self-tone`, advisory only) or from a second copy of itself
+(`--spawn-tone`, decisive: the tone comes from another process, so it has to appear in the capture). It writes nothing to disk, installs
 nothing and changes no setting; it is the fastest way to tell whether a machine supports the capture
 and, when it does not, which step is responsible.
 

@@ -66,7 +66,7 @@ processes and hands the resulting PCM straight into the very `MediaStream` Disco
 | `dsp/ring_buffer.{h,cc}` | a thread safe FIFO of frames that counts the dropped ones |
 | `dsp/resampler.{h,cc}` | a sinc resampler (Blackman, cutoff 0.95·min(1, out/in)), 44.1↔48↔96 kHz |
 | `dsp/mixer.{h,cc}` | summing N sources, fading in and out (20 ms), the limiter |
-| `dsp/packet_measure.h` | measuring a packet: non-zero samples, peak, RMS, and the Goertzel tone search — portable, so the tests can hold it to its numbers |
+| `dsp/packet_measure.h` | measuring a packet: non-zero samples, peak, RMS, and the Goertzel tone search — it takes the channel count and downmixes the interleaved buffer first (searching interleaved stereo as mono moves a 1 kHz tone to 500 Hz, which hid a tone that was really there); portable, so the tests can hold it to its numbers |
 | `capture.h` | the `IAppEnumerator`, `ICaptureSource`, `ICaptureFactory` interfaces — the seam between the engine and the OS |
 | `app_identity.{h,cc}` | grouping sessions into applications, the `exe:<path>` key, computing the root processes |
 | `capture_group.{h,cc}` | one capture per process tree of an application + summing the instances into one stream |

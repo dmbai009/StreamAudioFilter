@@ -14,7 +14,7 @@ What the last run showed:
 
 | Suite | Checks | What it covers |
 |---|---|---|
-| `native/test/dsp_tests.cc` | 86 | **packet measurement**: a window of zeros reads as silence (no non-zero sample, no peak, no audio), a 0.2 amplitude tone reads its amplitude and RMS (0.1414), a single non-zero sample inside a window of zeros is still found, the 16 bit path is scaled to the same range as the float path, the statistics accumulate across packets and reset, and the Goertzel search finds a 1 kHz tone (0.15–0.25) while a 440 Hz tone does not read as 1 kHz and silence reads as zero; then the u8/s16/s24 (3 byte)/s32/f32 formats, downmixing (centre at −3 dB, LFE dropped), the resampler 44.1↔48 and 48→96 (SNR 76.1 / 89.5 / 93.2 dB), the absence of clicks (a 20 ms fade fits inside a block), the limiter: two full scale streams sum to ≤ 1.0 and > 0.85, unity gain 1.0000 ± 0.01 |
+| `native/test/dsp_tests.cc` | 95 | **packet measurement**: a window of zeros reads as silence (no non-zero sample, no peak, no audio), a 0.2 amplitude tone reads its amplitude and RMS (0.1414), a single non-zero sample inside a window of zeros is still found, the 16 bit path is scaled to the same range as the float path, the statistics accumulate across packets and reset, and the Goertzel search finds a 1 kHz tone (0.15–0.25) while a 440 Hz tone does not read as 1 kHz and silence reads as zero, and the same search **across channels**: a stereo 1 kHz tone is found with `channels=2`, the identical buffer read as mono reads 0.0000 at 1 kHz and 0.1999 at 500 Hz (the interleaving bug that made the first real probe runs report a present tone as missing), a tone in one channel of two reads half the amplitude, a 4 channel buffer is found, a nonsense channel count falls back to mono instead of running past the buffer, and a buffer shorter than one frame has no tone; then the u8/s16/s24 (3 byte)/s32/f32 formats, downmixing (centre at −3 dB, LFE dropped), the resampler 44.1↔48 and 48→96 (SNR 76.1 / 89.5 / 93.2 dB), the absence of clicks (a 20 ms fade fits inside a block), the limiter: two full scale streams sum to ≤ 1.0 and > 0.85, unity gain 1.0000 ± 0.01 |
 | `native/test/engine_tests.cc` | 97 | grouping processes into applications, mode A (including automatically accepting new applications), mode B, switching an application off and on live, rules surviving a mode change, an application closing on the fly, the limit of simultaneous captures, an uninterrupted output while the rules change (≥4800 frames in 150 ms), the "capture gate" (nothing is captured while idle), **several instances of one application**: splitting the request by root process, dropping duplicates, forwarding a single root without overhead, a second instance appearing during a share, an instance disappearing, a nested process not being captured twice; the presence of both instances is checked with a tone detector (Goertzel) at frequencies tied to the PIDs, including a check that neither of them is twice as loud. Because re-creating the capture leaves that application silent for about 0.1 s, the check waits for the settled state and asserts the bound (`< 2000 ms`) plus that no single measured window ever contains an instance twice — asserting a fixed instant instead made the test depend on where the window fell and failed on a loaded Windows runner; **diagnostics**: every HRESULT the plugin can report has a name and an explanation, `0x8000000E` is explained as the agile object requirement and explicitly *not* as a Windows version problem, unknown codes keep their number and are still classified (`AUDCLNT_E_*`, `HRESULT_FROM_WIN32`, `RPC_E_*`) |
 | `tests/addon.test.mjs` | 6 scenarios | the real native addon: starting with the test backend, the application list being visible, the capture gate (nothing is captured while idle), audio appearing, reading PCM (stereo f32, not silence, limiter ≤ 1.0), switching an application off on the fly without interrupting the stream, mode B (empty by default, then only what is allowed), automatically accepting a new application in mode A, a closed application disappearing, statistics, stopping, trimming invalid arguments, one entry and one stream for an application started twice (`instances: 2`) |
 | `tests/intercept.test.ts` | 13 | **failing closed**: the pure decision table `decideAudio`, the removal of the system audio when filtering is unavailable (the key check of the audit), an exception from `createTrack()` not breaking the start of a share, the unfiltered fallback only with the explicit setting and with a warning, a switched off filter touching nothing, both ways of obtaining the audio (`getDisplayMedia` and `getUserMedia`+`chromeMediaSource: desktop`), the microphone staying untouched, a video only share never getting a track, a share that did not go through the interceptor being reported as an error, the death of the filtered track being visible in the state, installing and uninstalling the interceptor being idempotent |
@@ -52,16 +52,22 @@ Every item corresponds to a requirement of the original task. The expected resul
 0. **Prove the capture before blaming the plugin.** Run the standalone probe from the release
    (`docs/PROBE.md`), in this order:
    ```text
-   process-loopback-probe.exe --playing                 # which processes are playing right now
-   process-loopback-probe.exe --system --self-tone      # control: the tone must come back
-   process-loopback-probe.exe --process <player>.exe    # the real case
+   process-loopback-probe.exe --playing                            # which processes are playing right now
+   process-loopback-probe.exe --spawn-tone --seconds 8             # decisive content check
+   process-loopback-probe.exe --spawn-tone --system --seconds 8    # the same check on the device path
+   process-loopback-probe.exe --process <player>.exe --seconds 8   # the real case
    ```
-   * `--system` finding the tone means the device, the engine and the probe are fine; a missing tone means
-     the audio never reached the device (nothing to do with per process capture).
+   * `--spawn-tone` starts a **second copy of the probe** that plays 1 kHz, and captures *it*: the tone has
+     to appear in the capture, because it comes from another process. A missing tone there is a real
+     failure and the probe exits `1`.
+   * `--spawn-tone --system` performs the same check on the whole system audio, i.e. on the device path:
+     finding the tone proves the device and the audio engine deliver what applications play.
    * `--process <player>` is expected to print `non-zero samples` well above zero while the player is
      playing. `no audio arrived` with a player that *is* playing is the one result that needs investigation.
-   * A missing `--self-tone` tone in the per process mode is **not** a failure: the probe captures itself,
-     and its own audio is not guaranteed to be in its own capture. The probe says so explicitly.
+   * `--self-tone` (the probe plays *and* captures its own tone) is the weakest form of the check: when the
+     tone is missing, the run cannot tell a capture that missed the content apart from a tone that never
+     reached the mix of the captured device. The probe says exactly that and never turns it into a
+     failure; use `--spawn-tone` instead when the answer has to be decisive.
 1. Install the plugin (`docs/INSTALL.md`) and restart Discord.
 2. Open the panel and press **"Check support"**.
    * Windows 10 version 2004+ (build ≥ 19041) and Windows 11 → expect "supported: yes" ("real activation
