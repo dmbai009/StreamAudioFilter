@@ -7,6 +7,13 @@ name: Prebuilt Vencord bundle
 #
 # The same job runs for pull requests, so the bundle cannot rot unnoticed: if a
 # change stops the plugin from ending up in the bundle, this job fails.
+#
+# Every step runs through .github/ci/step.sh so that a failure publishes the
+# tail of its log as an annotation (job logs are not reachable everywhere).
+#
+# The Vencord checkout lives in $RUNNER_TEMP, outside the repository checkout:
+# copying this repository into a directory *inside* itself makes rsync report
+# "vanished source files" (exit 24) and risks copying the copy.
 
 on:
   workflow_call:
@@ -22,15 +29,22 @@ on:
       - "*.ts"
       - "*.tsx"
       - "style.css"
+      - ".github/ci/**"
       - ".github/workflows/bundle.yml"
   pull_request:
   workflow_dispatch:
 
 env:
-  # The Vencord release the bundle is built from. The bundle disables Vencord's
-  # own updater on purpose (see the build step), so this pin is what users get
-  # until a new release of this repository is published: bump it deliberately,
-  # then tag a release.
+  # pnpm refuses to replace an existing node_modules directory without a TTY
+  # unless it knows it is in CI, and corepack asks before downloading the pnpm
+  # version Vencord pins. Neither question can be answered here.
+  CI: "true"
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+  # The Vencord release the bundle is built from. The bundle switches Vencord's
+  # own updater off on purpose (see the build step), so this pin is what users
+  # get until a new release of this repository is published: bump it
+  # deliberately, then tag a release.
   VENCORD_REF: v1.15.11
 
 jobs:
@@ -44,72 +58,116 @@ jobs:
         with:
           node-version: 22
 
+      # Cheap, and it answers "is there room / what tools are these" before any
+      # of it can matter.
+      - name: Environment
+        run: |
+          bash .github/ci/step.sh "Environment" <<'SCRIPT'
+          set -euo pipefail
+          df -h "$RUNNER_TEMP" "$GITHUB_WORKSPACE" | sed 's/  */ /g'
+          echo "cpus: $(nproc), memory: $(free -m | awk '/Mem:/ {print $2" MiB"}')"
+          tar --version | head -1
+          bash --version | head -1
+          SCRIPT
+
       - name: Fetch Vencord ${{ env.VENCORD_REF }}
         run: |
+          bash .github/ci/step.sh "Fetch Vencord" <<'SCRIPT'
           set -euo pipefail
-          git clone --depth 1 --branch "$VENCORD_REF" https://github.com/Vencord/Vencord vencord
-          echo "VENCORD_COMMIT=$(git -C vencord rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "Vencord package version: $(grep -m1 '"version"' vencord/package.json)"
+          vencord_dir="$RUNNER_TEMP/vencord"
+          rm -rf "$vencord_dir"
+          git clone --depth 1 --branch "$VENCORD_REF" https://github.com/Vencord/Vencord "$vencord_dir"
+          test -f "$vencord_dir/package.json"
+          echo "VENCORD_DIR=$vencord_dir" >> "$GITHUB_ENV"
+          echo "VENCORD_COMMIT=$(git -C "$vencord_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "Vencord ref $VENCORD_REF at $(git -C "$vencord_dir" rev-parse --short HEAD)"
+          du -sh "$vencord_dir"
+          SCRIPT
 
       - name: Vencord dependencies
         run: |
+          bash .github/ci/step.sh "Vencord dependencies" <<'SCRIPT'
           set -euo pipefail
-          cd vencord
+          cd "$VENCORD_DIR"
           corepack enable
           pnpm install --frozen-lockfile
+          # Checked explicitly: an install that silently did nothing would fail
+          # much later with a confusing error.
+          test -x node_modules/.bin/esbuild
+          test -d node_modules/react
+          echo "packages: $(ls node_modules | wc -l), size: $(du -sh node_modules | cut -f1)"
+          SCRIPT
 
       - name: Place the plugin into src/userplugins
         run: |
+          bash .github/ci/step.sh "Place the plugin" <<'SCRIPT'
           set -euo pipefail
-          mkdir -p vencord/src/userplugins/StreamAudioFilter
-          # The checkout of this repository, minus what must never be copied.
-          rsync -a --exclude .git --exclude node_modules --exclude build --exclude ci-out \
-              ./ vencord/src/userplugins/StreamAudioFilter/
-          test -f vencord/src/userplugins/StreamAudioFilter/index.tsx
-          test -f vencord/src/userplugins/StreamAudioFilter/native.ts
+          target="$VENCORD_DIR/src/userplugins/StreamAudioFilter"
+          mkdir -p "$target"
+          # The tracked files of this repository (the working tree contains
+          # nothing else that belongs into a plugin).
+          git -C "$GITHUB_WORKSPACE" archive --format=tar HEAD | tar -xf - -C "$target"
+          rm -rf "$target/ci-out"
+          test -f "$target/index.tsx"
+          test -f "$target/native.ts"
+          test -f "$target/style.css"
+          echo "plugin files: $(find "$target" -type f | wc -l)"
+          SCRIPT
 
       - name: Build the distribution
         run: |
+          bash .github/ci/step.sh "Build the distribution" <<'SCRIPT'
           set -euo pipefail
-          cd vencord
-          # --standalone: the same flavour the official Vencord installer ships
-          #   (the bundle is placed into %APPDATA%\Vencord\dist, where a
-          #   non-standalone build would expect a source tree to update from);
+          cd "$VENCORD_DIR"
+          # --standalone: the flavour the official Vencord installer ships, i.e.
+          #   what belongs into %APPDATA%\Vencord\dist (a non-standalone build
+          #   would expect a source tree above it and offer to rebuild itself);
           # --disable-updater: Vencord's updater downloads the official build and
-          #   replaces this entire dist on the next update, which would silently
-          #   delete the plugin. This bundle is a pinned distribution instead:
-          #   updates come from a new release of this repository.
+          #   replaces this whole dist, which would silently delete the plugin.
+          #   This bundle is a pinned distribution instead: updates come from a
+          #   new release of this repository.
           pnpm build --standalone --disable-updater
+          test -f dist/patcher.js
+          test -f dist/renderer.js
+          test -f dist/preload.js
+          du -sh dist
+          SCRIPT
 
       - name: Verify the bundle really contains the plugin
         run: |
+          bash .github/ci/step.sh "Verify the bundle" <<'SCRIPT'
           set -euo pipefail
-          grep -q "StreamAudioFilter" vencord/dist/renderer.js
-          grep -q "StreamAudioFilter" vencord/dist/patcher.js
-          # The updater must not be inside: it is the one thing that would
-          # silently remove the plugin again.
-          if grep -q "VencordGetUpdates" vencord/dist/patcher.js; then
-              echo "::error::the updater is still inside the bundle — a Vencord update would remove the plugin"
+          cd "$VENCORD_DIR"
+          grep -q "StreamAudioFilter" dist/renderer.js
+          grep -q "StreamAudioFilter" dist/patcher.js
+          # The updater is the one thing that would silently remove the plugin
+          # again, so its absence is part of the contract.
+          if grep -q "VencordGetUpdates" dist/patcher.js; then
+              echo "the updater is still inside the bundle — a Vencord update would remove the plugin"
               exit 1
           fi
-          echo "the bundle contains the plugin and cannot be overwritten by Vencord's updater"
+          echo "plugin inside renderer.js and patcher.js: $(grep -c StreamAudioFilter dist/renderer.js) / $(grep -c StreamAudioFilter dist/patcher.js)"
+          SCRIPT
 
       - name: Pack
         run: |
+          bash .github/ci/step.sh "Pack" <<'SCRIPT'
           set -euo pipefail
-          mkdir -p bundle/Vencord-dist
-          cp vencord/dist/* bundle/Vencord-dist/
+          bundle="$RUNNER_TEMP/bundle"
+          rm -rf "$bundle"
+          mkdir -p "$bundle/Vencord-dist"
+          cp "$VENCORD_DIR"/dist/* "$bundle/Vencord-dist/"
           # Source maps are a third of the download and useless to a user.
-          find bundle -name '*.map' -delete
+          find "$bundle" -name '*.map' -delete
 
           {
               echo "Vencord ref:    $VENCORD_REF"
               echo "Vencord commit: $VENCORD_COMMIT"
               echo "Plugin commit:  $GITHUB_SHA"
               echo "Built:          $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } > bundle/VENCORD-VERSION.txt
+          } > "$bundle/VENCORD-VERSION.txt"
 
-          cat > bundle/README.txt <<'EOF'
+          cat > "$bundle/README.txt" <<'EOF'
           Vencord + StreamAudioFilter
           ==========================
 
@@ -146,8 +204,8 @@ jobs:
           Vencord's own updater is switched off in this build on purpose: it would
           replace the whole dist with the official one and remove the plugin with
           it. To move to a newer Vencord, download a newer release of this
-          repository and repeat steps 2 and 3. If you re-run the official Vencord
-          installer or use its "Repair" option, it also replaces these files.
+          repository and repeat steps 2 and 3. Re-running the official Vencord
+          installer (or its "Repair" option) also replaces these files.
 
           Requirements
           ------------
@@ -162,11 +220,12 @@ jobs:
           together with its third party notices (the *.LEGAL.txt files).
           EOF
 
-          cd bundle
+          cd "$bundle"
           zip -qr "$GITHUB_WORKSPACE/streamaudiofilter-vencord-dist.zip" .
           cd "$GITHUB_WORKSPACE"
           sha256sum streamaudiofilter-vencord-dist.zip | tee streamaudiofilter-vencord-dist.zip.sha256
           unzip -l streamaudiofilter-vencord-dist.zip
+          SCRIPT
 
       - name: Upload the bundle
         uses: actions/upload-artifact@v4
