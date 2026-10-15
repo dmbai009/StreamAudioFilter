@@ -116,18 +116,26 @@ application exits.
 
 ## 3. Installation
 
-In short:
+On Windows, from the folder this repository was unpacked into — one command:
 
-```
-1. Copy the plugin folder to   <Vencord>\src\userplugins\StreamAudioFilter
-2. Build the native addon:     powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1
-3. Put streamaudiofilter.node into  %APPDATA%\Vencord\streamAudioFilter\native\
-4. Rebuild Vencord (pnpm build) and enable the plugin
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -DownloadAddon v0.1.0
 ```
 
-A prebuilt Windows x64 addon is attached to the GitHub releases; it is built by the same CI that runs
-the tests, and the release shows its SHA-256. Step by step instructions with a check after every step:
-[docs/INSTALL.md](docs/INSTALL.md).
+It checks Node.js, gets the Vencord source, copies the plugin into `src\userplugins`, installs the
+dependencies, builds Vencord and verifies that the plugin really ended up in the build, places the
+native addon in `%APPDATA%\Vencord\streamAudioFilter\native\` and patches Discord with your build
+(that last step downloads the official Vencord installer CLI, and the script asks first). Afterwards:
+start Discord, enable the plugin, press "Check support".
+
+`-Reinject` re-patches Discord after a Discord update, `-Update` refreshes Vencord and rebuilds. All
+switches, the manual steps and the troubleshooting table: [docs/INSTALL.md](docs/INSTALL.md).
+
+Why there is no "just drop the plugin file in" route: Vencord does not read plugins from a folder at
+runtime — its build bundles `src\plugins` and `src\userplugins` into the JavaScript Discord loads, so a
+user plugin can only enter through a build of Vencord. The native addon is the one part that really is
+a single file, and it is attached to the GitHub releases (built by the same CI that runs the tests,
+with its SHA-256 on the release page).
 
 ---
 
@@ -204,7 +212,7 @@ ui/                    panels: settings, microphone popover, floating window
 components/            the application row, the diagnostics block
 native/                C++: DSP, engine, mock backend, WASAPI backend, N-API addon
                        capture_group.* — one capture per process tree of an application
-scripts/               building the native addon, running the portable tests
+scripts/               install.ps1 (one command install), building the addon, portable tests
 dev/typecheck.sh       type and lint check inside a real Vencord
 tests/                 tests of the rules, of the interception and of the JS ↔ C++ boundary
 docs/                  architecture, limitations, installation, test plan

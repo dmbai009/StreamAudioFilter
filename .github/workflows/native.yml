@@ -85,6 +85,26 @@ jobs:
         with:
           node-version: 22
 
+      # The installer scripts are the files users are told to run, so a typo in
+      # one of them is a broken installation for everybody: they are parsed here
+      # with the very parser PowerShell itself uses.
+      - name: PowerShell scripts parse
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in @("scripts/install.ps1", "scripts/build-native.ps1")) {
+              Write-Host "parsing $file"
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile(
+                  (Resolve-Path $file).Path, [ref]$null, [ref]$errors) | Out-Null
+              foreach ($error in $errors) {
+                  $failed = $true
+                  Write-Host "::error file=$file::$($error.Message)"
+              }
+          }
+          if ($failed) { exit 1 }
+          Write-Host "both scripts parse"
+
       - name: Build native addon (node-gyp + MSVC)
         shell: bash
         run: |
