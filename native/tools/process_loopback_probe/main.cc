@@ -62,7 +62,9 @@
 
 using saf::win::ComCallback;
 using saf::win::ComPtr;
-using saf::win::IID_IAgileObject;
+// IID_IAgileObject is deliberately *not* pulled into the global namespace: the
+// SDK declares that name there, and a using-declaration for it is a redefinition
+// (MSVC C2874). It is used as saf::win::IID_IAgileObject below.
 
 namespace {
 
@@ -441,7 +443,7 @@ int runProbe(const Options& options, RunResult& result) {
     ComPtr<ActivationHandler> handler(new ActivationHandler(completed));
     {
         void* agile = nullptr;
-        const bool isAgile = SUCCEEDED(handler->QueryInterface(IID_IAgileObject, &agile)) && agile != nullptr;
+        const bool isAgile = SUCCEEDED(handler->QueryInterface(saf::win::IID_IAgileObject, &agile)) && agile != nullptr;
         if (agile) static_cast<IUnknown*>(agile)->Release();
         note("handler", std::string("completion handler is an agile object: ") + (isAgile ? "yes" : "NO"));
         if (!isAgile) {
