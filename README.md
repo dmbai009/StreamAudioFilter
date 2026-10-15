@@ -180,12 +180,15 @@ Honestly about what has been verified and what has not.
   application list, live rules, switching an application off on the fly, mode B, applications appearing
   and closing, reading PCM (not silence, not overload), statistics, the capture gate, stopping and
   trimming invalid arguments, and two instances of one application as a single row;
-* the portable DSP core and the mixing engine: `./scripts/run-native-tests.sh` — **127 checks, 0
-  failures** (`dsp_tests` 62, `engine_tests` 65): the u8/s16/s24/s32/f32 formats, downmixing, the
+* the portable DSP core and the mixing engine: `./scripts/run-native-tests.sh` — **183 checks, 0
+  failures** (`dsp_tests` 86, `engine_tests` 97): the u8/s16/s24/s32/f32 formats, downmixing, the
   resampler (SNR > 70 dB at 44.1↔48 kHz), the limiter without clipping when summing, modes A and B,
   changing rules live, applications closing, the limit of simultaneous captures, the "capture gate"
   (nothing is captured while no share runs) and capturing several instances of one application without
-  duplicating its audio (checked with a tone detector at the frequencies of both instances);
+  duplicating its audio (checked with a tone detector at the frequencies of both instances); the
+  **packet measurement** that decides whether a stream carries audio or only correctly paced zeros, and
+  the **diagnostics**: every `HRESULT` the plugin can report has a name and an explanation, and
+  `0x8000000E` is explained as the agile-object requirement rather than as a Windows version problem;
 * the rule logic of the plugin: `npx tsx tests/rules.test.ts` — **11 tests**, including the selection
   surviving a mode change, different applications with the same name not being merged, and a corrupted
   store being tolerated;
@@ -194,8 +197,10 @@ Honestly about what has been verified and what has not.
 
 **Builds, but does not run, in this environment:** the Windows addon (WASAPI process loopback, audio
 session enumeration, N-API) is compiled by MSVC in GitHub Actions
-(`.github/workflows/native.yml`, `.github/workflows/release.yml`). The build log is committed into
-`ci-out/`, because the Actions logs are not reachable from this network.
+(`.github/workflows/native.yml`, `.github/workflows/release.yml`). The same job compiles the portable
+tests with `cl.exe` and runs them, and builds the standalone **`process-loopback-probe.exe`**
+(`docs/PROBE.md`) that lets you check the capture on your machine without Discord. The build log is
+committed into `ci-out/`, because the Actions logs are not reachable from this network.
 
 **Needs your machine:** the audio itself. No test here can prove that Discord hands the screen share
 audio through the very call the plugin intercepts, or that the mixer sounds right on a particular sound

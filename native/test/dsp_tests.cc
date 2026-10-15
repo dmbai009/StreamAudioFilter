@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "../src/dsp/convert.h"
+#include "../src/dsp/packet_measure.h"
 #include "../src/dsp/mixer.h"
 #include "../src/dsp/resampler.h"
 #include "../src/dsp/ring_buffer.h"
@@ -362,6 +363,101 @@ static void testMixer() {
     CHECK(std::fabs(out[blockFrames * 2 - 1]) < 1e-6f, "silent after fade out, got %f", out[blockFrames * 2 - 1]);
 }
 
+// --------------------------------------------------------- packet measurement
+
+// Why this exists: the first version of the capture diagnostics asked the audio
+// engine whether a packet was silent, and the engine answers "no" even for a
+// stream of zeros in a process loopback capture. The plugin therefore claimed
+// that samples were arriving when they were not. These checks pin down the
+// replacement: silence must read as silence, and the tone search must find a
+// tone that is there and not find one that is not.
+
+static void testPacketMeasure() {
+    const int rate = 48000;
+
+    // --- a window of zeros is silence, not "audio arrived"
+    std::vector<float> silence(rate / 10, 0.0f);  // 100 ms
+    saf::dsp::SampleStats empty;
+    saf::dsp::measureFloats(silence.data(), silence.size(), empty);
+    CHECK(empty.samples == silence.size(), "every sample is looked at, got %llu",
+          static_cast<unsigned long long>(empty.samples));
+    CHECK(empty.nonzero == 0, "silence has no non-zero sample, got %llu",
+          static_cast<unsigned long long>(empty.nonzero));
+    CHECK(!empty.carriesAudio(), "silence does not carry audio");
+    CHECK(empty.peak == 0.0, "silence has no peak, got %f", empty.peak);
+    CHECK(empty.rms() == 0.0, "silence has no RMS, got %f", empty.rms());
+
+    // --- a real signal is measured: peak, RMS and the non-zero count
+    std::vector<float> tone(silence.size());
+    for (size_t i = 0; i < tone.size(); i++) {
+        tone[i] = static_cast<float>(0.2 * std::sin(2.0 * M_PI * 1000.0 * static_cast<double>(i) / rate));
+    }
+    saf::dsp::SampleStats measured;
+    saf::dsp::measureFloats(tone.data(), tone.size(), measured);
+    CHECK(measured.carriesAudio(), "a tone carries audio");
+    CHECK(std::fabs(measured.peak - 0.2) < 0.01, "peak is the tone amplitude, got %f", measured.peak);
+    // RMS of a sine of amplitude 0.2 is 0.2/sqrt(2) = 0.1414
+    CHECK(std::fabs(measured.rms() - 0.1414) < 0.005, "RMS of a sine, got %f", measured.rms());
+    // A sine crosses zero exactly at the start and at every half period, so all but a
+    // couple of samples are non-zero in practice.
+    CHECK(measured.nonzero >= tone.size() - 2, "essentially every sample of the tone is non-zero, got %llu",
+          static_cast<unsigned long long>(measured.nonzero));
+
+    // --- one non-zero sample in a window of silence is still found (that is the
+    //     whole difference between "packets arrive" and "audio arrives")
+    std::vector<float> almostSilent(1000, 0.0f);
+    almostSilent[500] = 0.0001f;
+    saf::dsp::SampleStats single;
+    saf::dsp::measureFloats(almostSilent.data(), almostSilent.size(), single);
+    CHECK(single.nonzero == 1, "exactly one non-zero sample, got %llu",
+          static_cast<unsigned long long>(single.nonzero));
+    CHECK(single.carriesAudio(), "one non-zero sample is still audio, not silence");
+
+    // --- the 16 bit path is scaled to the same range as the float path
+    std::vector<int16_t> pcm(8, 0);
+    pcm[0] = 32767;
+    pcm[1] = -32768;
+    pcm[2] = 16384;
+    saf::dsp::SampleStats fromPcm;
+    saf::dsp::measureInt16(pcm.data(), pcm.size(), fromPcm);
+    CHECK(fromPcm.nonzero == 3, "three non-zero PCM samples, got %llu",
+          static_cast<unsigned long long>(fromPcm.nonzero));
+    CHECK(std::fabs(fromPcm.peak - 1.0) < 0.001, "full scale PCM reads as 1.0, got %f", fromPcm.peak);
+
+    // --- accumulate across packets the way the capture loop does
+    saf::dsp::SampleStats window;
+    saf::dsp::measureFloats(silence.data(), silence.size(), window);
+    saf::dsp::measureFloats(tone.data(), tone.size() / 2, window);
+    CHECK(window.samples == silence.size() + tone.size() / 2, "samples accumulate over packets");
+    CHECK(window.nonzero >= tone.size() / 2 - 2, "non-zero samples accumulate over packets, got %llu",
+          static_cast<unsigned long long>(window.nonzero));
+    window.reset();
+    CHECK(window.samples == 0 && window.nonzero == 0 && window.peak == 0.0, "reset clears the statistics");
+
+    // --- the tone search: found when present, not found when absent
+    const double present = saf::dsp::toneMagnitude(tone.data(), tone.size(), rate, 1000.0);
+    CHECK(present > 0.15, "a 0.2 amplitude 1 kHz tone reads near its amplitude, got %f", present);
+    CHECK(present > 0.05, "a present tone passes the probe threshold (0.05), got %f", present);
+    CHECK(present < 0.25, "the magnitude does not overshoot, got %f", present);
+
+    std::vector<float> other(tone.size());
+    for (size_t i = 0; i < other.size(); i++) {
+        other[i] = static_cast<float>(0.2 * std::sin(2.0 * M_PI * 440.0 * static_cast<double>(i) / rate));
+    }
+    const double absent = saf::dsp::toneMagnitude(other.data(), other.size(), rate, 1000.0);
+    CHECK(absent < 0.05, "a 440 Hz tone does not read as 1 kHz, got %f", absent);
+
+    const double silentTone = saf::dsp::toneMagnitude(silence.data(), silence.size(), rate, 1000.0);
+    CHECK(silentTone == 0.0, "silence has no tone, got %f", silentTone);
+
+    // --- a half second of tone is enough, a few milliseconds are not: this is
+    //     what makes the probe's window length defensible
+    const double shortWindow = saf::dsp::toneMagnitude(tone.data(), 48, rate, 1000.0);
+    CHECK(shortWindow >= 0.0, "a very short window does not produce nonsense, got %f", shortWindow);
+    CHECK(saf::dsp::toneMagnitude(nullptr, 0, rate, 1000.0) == 0.0, "no samples, no tone");
+    CHECK(saf::dsp::toneMagnitude(tone.data(), tone.size(), 0, 1000.0) == 0.0, "no sample rate, no tone");
+}
+
 // ------------------------------------------------------------------- main
 
 int main() {
@@ -370,6 +466,7 @@ int main() {
     testConversion();
     testResampler();
     testMixer();
+    testPacketMeasure();
 
     std::printf("\n%d checks, %d failure(s)\n", checks, failures);
     return failures == 0 ? 0 : 1;

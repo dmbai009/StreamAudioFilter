@@ -66,6 +66,7 @@ processes and hands the resulting PCM straight into the very `MediaStream` Disco
 | `dsp/ring_buffer.{h,cc}` | a thread safe FIFO of frames that counts the dropped ones |
 | `dsp/resampler.{h,cc}` | a sinc resampler (Blackman, cutoff 0.95·min(1, out/in)), 44.1↔48↔96 kHz |
 | `dsp/mixer.{h,cc}` | summing N sources, fading in and out (20 ms), the limiter |
+| `dsp/packet_measure.h` | measuring a packet: non-zero samples, peak, RMS, and the Goertzel tone search — portable, so the tests can hold it to its numbers |
 | `capture.h` | the `IAppEnumerator`, `ICaptureSource`, `ICaptureFactory` interfaces — the seam between the engine and the OS |
 | `app_identity.{h,cc}` | grouping sessions into applications, the `exe:<path>` key, computing the root processes |
 | `capture_group.{h,cc}` | one capture per process tree of an application + summing the instances into one stream |
@@ -190,6 +191,25 @@ success or the `HRESULT` with its meaning. The build number is added to the resu
 reminder that "per the documentation" the threshold is 20348 while in practice the capture works from
 19041). An activation without a process filter is performed as well: it shows that the audio engine is
 alive at all, even if the system refuses a per process capture.
+
+### What "audio arrived" means, and how a failure is named
+
+Two lessons from the first real test run, both of them about honesty rather than about audio:
+
+* A capture can be perfectly healthy and still carry nothing. The plugin used to decide "audio arrived"
+  from the `AUDCLNT_BUFFERFLAGS_SILENT` packet flag, and a process loopback stream never sets that flag:
+  the capability walk reported samples for streams of zeros. The decision is now based on counting the
+  samples that are not zero, and the peak (`native/src/dsp/packet_measure.h`, covered by the portable
+  tests). `GetBufferSize()` is not used as a packet size either — on a process loopback client it returns
+  a meaningless value (the probe saw `1478376832` frames), so it is only reported when it is plausible.
+* Every failure prints the stage it happened in and the `HRESULT` with its meaning, never a bare code: the
+  capture activation distinguishes `[activation-call]`, `[activation-wait]`, `[activate-result]` and
+  `[interface]`, and the capability walk has twelve stages (`native/src/win/windows_util.cc`). The one
+  code that used to be misread as "your Windows version is unsupported" —
+  `E_ILLEGAL_METHOD_CALL`/`0x8000000E` — now explains itself (`native/src/hr_advice.cc`).
+
+The stages and their meanings are listed in [PROBE.md](PROBE.md), which also documents the standalone
+probe that runs the same activation without Discord.
 
 ### Why the renderer and not the main process
 
