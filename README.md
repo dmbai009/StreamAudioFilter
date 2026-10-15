@@ -180,13 +180,16 @@ Honestly about what has been verified and what has not.
   application list, live rules, switching an application off on the fly, mode B, applications appearing
   and closing, reading PCM (not silence, not overload), statistics, the capture gate, stopping and
   trimming invalid arguments, and two instances of one application as a single row;
-* the portable DSP core and the mixing engine: `./scripts/run-native-tests.sh` — **183 checks, 0
-  failures** (`dsp_tests` 86, `engine_tests` 97): the u8/s16/s24/s32/f32 formats, downmixing, the
+* the portable DSP core and the mixing engine: `./scripts/run-native-tests.sh` — **192 checks, 0
+  failures** (`dsp_tests` 95, `engine_tests` 97): the u8/s16/s24/s32/f32 formats, downmixing, the
   resampler (SNR > 70 dB at 44.1↔48 kHz), the limiter without clipping when summing, modes A and B,
   changing rules live, applications closing, the limit of simultaneous captures, the "capture gate"
   (nothing is captured while no share runs) and capturing several instances of one application without
   duplicating its audio (checked with a tone detector at the frequencies of both instances); the
-  **packet measurement** that decides whether a stream carries audio or only correctly paced zeros, and
+  **packet measurement** that decides whether a stream carries audio or only correctly paced zeros, the
+  **tone search** that downmixes interleaved channels before it looks for 1 kHz (searching interleaved
+  stereo as if it were mono moves the tone to half its frequency, which is how the first real probe run
+  reported a tone that *was* in the audio as missing), and
   the **diagnostics**: every `HRESULT` the plugin can report has a name and an explanation, and
   `0x8000000E` is explained as the agile-object requirement rather than as a Windows version problem;
 * the rule logic of the plugin: `npx tsx tests/rules.test.ts` — **11 tests**, including the selection
