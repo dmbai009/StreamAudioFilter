@@ -15,6 +15,7 @@ engine_tests.cc
 app_identity.cc
 capture_group.cc
 engine.cc
+hr_advice.cc
 mock_backend.cc
 ring_buffer.cc
 convert.cc
@@ -45,11 +46,9 @@ StreamAudioFilter engine tests
 == mixing output
 == multi instance applications: roots, splitting, no duplication
 == engine: two instances of one application
-  FAIL test\engine_tests.cc:529: levelFirst > 0.12 && levelSecond > 0.12
-       both tones present (0.046511 / 0.251202)
-  FAIL test\engine_tests.cc:530: std::fabs(levelFirst - levelSecond) < 0.12
-       no instance is captured twice (0.046511 vs 0.251202)
+  restart took 375 ms, peak levels 0.246 / 0.246
 == engine: child process is not captured as a second instance
 == capture gate (plugin must be quiet while nothing is shared)
+== diagnostics
 
-65 checks, 2 failure(s)
+97 checks, 0 failure(s)
