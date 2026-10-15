@@ -12,13 +12,25 @@ mkdir -p "${build_dir}"
 cxx="${CXX:-g++}"
 flags=(-std=c++17 -O2 -Wall -Wextra -Wno-unused-parameter -pthread)
 
-echo "compiling native tests with ${cxx}"
-"${cxx}" "${flags[@]}" \
-    -o "${build_dir}/dsp_tests" \
-    "${root}/native/test/dsp_tests.cc" \
-    "${root}/native/src/dsp/ring_buffer.cc" \
-    "${root}/native/src/dsp/convert.cc" \
-    "${root}/native/src/dsp/resampler.cc" \
+dsp_sources=(
+    "${root}/native/src/dsp/ring_buffer.cc"
+    "${root}/native/src/dsp/convert.cc"
+    "${root}/native/src/dsp/resampler.cc"
     "${root}/native/src/dsp/mixer.cc"
+)
+engine_sources=(
+    "${dsp_sources[@]}"
+    "${root}/native/src/app_identity.cc"
+    "${root}/native/src/engine.cc"
+    "${root}/native/src/mock/mock_backend.cc"
+)
 
-exec "${build_dir}/dsp_tests" "$@"
+echo "compiling native tests with ${cxx}"
+"${cxx}" "${flags[@]}" -o "${build_dir}/dsp_tests" "${root}/native/test/dsp_tests.cc" "${dsp_sources[@]}"
+"${cxx}" "${flags[@]}" -o "${build_dir}/engine_tests" "${root}/native/test/engine_tests.cc" "${engine_sources[@]}"
+
+status=0
+"${build_dir}/dsp_tests" "$@" || status=1
+echo
+"${build_dir}/engine_tests" "$@" || status=1
+exit "${status}"
