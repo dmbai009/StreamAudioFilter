@@ -515,14 +515,42 @@ static void testMultiInstanceEngine() {
 
     // Both instances must be audible, from one stream (the engine must not mix
     // the application twice), and neither of them twice as loud as the other.
-    CHECK(waitFor([&] {
-        const auto audio = readFrames(*fixture.engine, 9600, 500);
-        const double a = toneMagnitude(audio, 48000, toneFirst);
-        const double b = toneMagnitude(audio, 48000, toneSecond);
-        return a > 0.1 && b > 0.1;
-    }, 4000), "both instances are in the mix");
+    //
+    // A window measured right after the change can still contain the restart:
+    // the old capture fades out, the new one starts empty, so this application
+    // is quiet for about a tenth of a second (documented in
+    // docs/LIMITATIONS.md). Asserting a fixed instant made this test depend on
+    // where exactly that window fell and failed on a loaded Windows runner, so
+    // the *settled* state is asserted instead - plus the bound that it has to
+    // settle quickly.
+    const auto restartStart = steady_clock::now();
+    double windowFirst = 0.0;
+    double windowSecond = 0.0;
+    double peakFirst = 0.0;
+    double peakSecond = 0.0;
+    bool settled = false;
+    while (steady_clock::now() - restartStart < seconds(4)) {
+        const auto audio = readFrames(*fixture.engine, 4800, 500);
+        windowFirst = toneMagnitude(audio, 48000, toneFirst);
+        windowSecond = toneMagnitude(audio, 48000, toneSecond);
+        peakFirst = std::max(peakFirst, windowFirst);
+        peakSecond = std::max(peakSecond, windowSecond);
+        if (windowFirst > 0.12 && windowSecond > 0.12) {
+            settled = true;
+            break;
+        }
+    }
+    const auto settleMs = duration_cast<milliseconds>(steady_clock::now() - restartStart).count();
+    CHECK(settled, "both instances are in the mix (%.3f / %.3f after %lld ms)", windowFirst, windowSecond,
+          static_cast<long long>(settleMs));
+    CHECK(settleMs < 2000, "the restart settles quickly (%lld ms)", static_cast<long long>(settleMs));
+    // No window during the restart may contain an instance twice: that would
+    // show up as a level near double the one capture produces.
+    CHECK(peakFirst < 0.45 && peakSecond < 0.45, "no instance is captured twice during the restart (%.3f / %.3f)",
+          peakFirst, peakSecond);
+    std::printf("  restart took %lld ms, peak levels %.3f / %.3f\n", static_cast<long long>(settleMs), peakFirst, peakSecond);
 
-    std::this_thread::sleep_for(milliseconds(200));
+    // The settled state, on a window read after the restart finished.
     const auto audio = readFrames(*fixture.engine, 9600);
     const double levelFirst = toneMagnitude(audio, 48000, toneFirst);
     const double levelSecond = toneMagnitude(audio, 48000, toneSecond);
