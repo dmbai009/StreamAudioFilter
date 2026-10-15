@@ -20,6 +20,7 @@
 #include <thread>
 #include <vector>
 
+#include "../dsp/packet_measure.h"
 #include "../hr_advice.h"
 #include "../platform.h"
 #include "com_iids.h"
@@ -163,7 +164,10 @@ std::string systemMessage(HRESULT hr) {
     if (length && message) {
         std::wstring text(message, length);
         while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' ')) text.pop_back();
-        result += " — " + toUtf8(text);
+        // The bare text only: both callers add their own separator, and returning
+        // "— text" here produced "NAME — — text" in one place and "the system says:  — text"
+        // in the other.
+        result = toUtf8(text);
     }
     if (message) LocalFree(message);
     return result;
@@ -426,6 +430,21 @@ std::string formatOf(const WAVEFORMATEX* format) {
 }
 
 /**
+ * Measures one packet with the shared, portable and tested implementation
+ * (native/src/dsp/packet_measure.h). Nothing is stored and nothing is written to
+ * disk: two numbers are updated as the packet is read.
+ */
+void measurePacket(const BYTE* data, UINT32 frames, int channels, bool floatData, saf::dsp::SampleStats& stats) {
+    if (!data || frames == 0 || channels <= 0) return;
+    const size_t count = static_cast<size_t>(frames) * static_cast<size_t>(channels);
+    if (floatData) {
+        saf::dsp::measureFloats(reinterpret_cast<const float*>(data), count, stats);
+    } else {
+        saf::dsp::measureInt16(reinterpret_cast<const int16_t*>(data), count, stats);
+    }
+}
+
+/**
  * One ActivateAudioInterfaceAsync, with every distinct failure it can produce in
  * a field of its own: the call, the callback, GetActivateResult, and the result
  * the activation itself produced. Collapsing those four into "it failed" is what
@@ -631,10 +650,16 @@ ProbeRun walkProcessLoopback() {
     WAVEFORMATEXTENSIBLE preferred;
     makeFloatFormat(preferred, 48000, 2);
 
+    // What the engine agreed to, so the packets below can be read correctly.
+    const WAVEFORMATEX* negotiated = nullptr;
+    bool captureIsFloat = false;
+
     HRESULT initHr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 200000, 0,
         reinterpret_cast<WAVEFORMATEX*>(&preferred), nullptr);
     if (SUCCEEDED(initHr)) {
-        log.note("client-init", "800000 = 20 ms buffer accepted with 48 kHz / 2 channels / 32 bit float "
+        negotiated = reinterpret_cast<const WAVEFORMATEX*>(&preferred);
+        captureIsFloat = true;
+        log.note("client-init", "200000 = 20 ms buffer accepted with 48 kHz / 2 channels / 32 bit float "
                                 "(AUTOCONVERTPCM lets the engine convert)");
     } else {
         log.note("client-init", "48 kHz float stereo was refused: " + hresultName(initHr) + " ("
@@ -642,7 +667,11 @@ ProbeRun walkProcessLoopback() {
         WAVEFORMATEX* mixFormat = nullptr;
         if (defaultMixFormat(&mixFormat) && mixFormat) {
             initHr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 200000, 0, mixFormat, nullptr);
-            if (SUCCEEDED(initHr)) log.note("client-init", "the endpoint mix format was accepted: " + formatOf(mixFormat));
+            if (SUCCEEDED(initHr)) {
+                negotiated = mixFormat;
+                captureIsFloat = mixFormat->wBitsPerSample == 32;
+                log.note("client-init", "the endpoint mix format was accepted: " + formatOf(mixFormat));
+            }
             CoTaskMemFree(mixFormat);
         } else {
             log.note("client-init", "the endpoint mix format could not be read");
@@ -670,8 +699,20 @@ ProbeRun walkProcessLoopback() {
         return run;
     }
 
+    // GetBufferSize is not meaningful for a process loopback client - the value is
+    // not a packet size, and on some systems it is large nonsense (the standalone
+    // probe reported hundreds of millions of frames). It is therefore only printed
+    // when it is plausible, and it is never used to size or pace anything: the
+    // stream is paced by the completion event.
     UINT32 bufferFrames = 0;
-    if (SUCCEEDED(client->GetBufferSize(&bufferFrames))) {
+    const HRESULT sizeHr = client->GetBufferSize(&bufferFrames);
+    const UINT32 saneLimit = 48000u * 4;  // 4 seconds at the format we ask for
+    if (FAILED(sizeHr)) {
+        log.note("buffer-size", "the engine does not report a packet size: " + hresultName(sizeHr));
+    } else if (bufferFrames == 0 || bufferFrames > saneLimit) {
+        log.note("buffer-size", "the engine reported " + std::to_string(bufferFrames)
+            + " frames, which is not a usable packet size for this kind of client - treated as unknown, not as a latency");
+    } else {
         log.note("buffer-size", std::to_string(bufferFrames) + " frames per packet");
     }
 
@@ -693,7 +734,9 @@ ProbeRun walkProcessLoopback() {
     // stored: nothing is written to disk anywhere in this file.
     uint64_t frames = 0;
     uint64_t silentFrames = 0;
+    saf::dsp::SampleStats stats;
     int packets = 0;
+    const int channels = negotiated ? negotiated->nChannels : 0;
     const ULONGLONG deadline = GetTickCount64() + kProbeListenMs;
     while (GetTickCount64() < deadline) {
         WaitForSingleObject(completed, kProbePacketTimeoutMs);
@@ -706,19 +749,29 @@ ProbeRun walkProcessLoopback() {
             if (FAILED(captureClient->GetBuffer(&data, &count, &packetFlags, nullptr, nullptr))) break;
             ++packets;
             frames += count;
-            if (packetFlags & AUDCLNT_BUFFERFLAGS_SILENT) silentFrames += count;
+            if (packetFlags & AUDCLNT_BUFFERFLAGS_SILENT) {
+                silentFrames += count;
+            } else {
+                measurePacket(data, count, channels, captureIsFloat, stats);
+            }
             captureClient->ReleaseBuffer(count);
         }
     }
 
-    run.pcmArrived = packets > 0 && frames > silentFrames;
+    // "A packet arrived" is not "audio arrived": the number of non-zero samples is
+    // what separates a working capture from a stream of zeros.
+    run.pcmArrived = packets > 0 && stats.carriesAudio();
     if (packets == 0) {
         log.note("data", "no packet arrived within " + std::to_string(kProbeListenMs) + " ms — the stream exists, the "
                          "engine delivered nothing (silence of the captured process, or a paused source)");
     } else {
         log.note("data", std::to_string(packets) + " packet(s), " + std::to_string(frames) + " frames in "
-            + std::to_string(kProbeListenMs) + " ms, " + std::to_string(silentFrames) + " of them flagged silent"
-            + (run.pcmArrived ? " — samples really arrive" : " — only silence arrived so far"));
+            + std::to_string(kProbeListenMs) + " ms, " + std::to_string(silentFrames) + " of them flagged silent, "
+            + std::to_string(stats.nonzero) + " non-zero samples, peak " + std::to_string(stats.peak)
+            + ", RMS " + std::to_string(stats.rms())
+            + (run.pcmArrived ? " — samples really arrive"
+                              : " — the stream carries silence (all samples are zero), which says nothing about "
+                                "support: the probed process was simply not playing anything"));
     }
 
     // --------------------------------------------------------------- stage 12
