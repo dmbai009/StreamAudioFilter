@@ -125,6 +125,11 @@ jobs:
               no such API at all.
             * Discord Desktop with Vencord injected into it. Vesktop and the
               browser client are not supported.
+            * process-loopback-probe.exe (also in this release) is optional: it
+              performs the same per process capture activation on its own, without
+              Discord, and names the step that fails. It installs nothing and
+              writes no audio to disk. Usage: --self-tone, --process <name.exe>,
+              --list; see docs/PROBE.md.
             * No administrator rights, no virtual audio device, no change to any
               Windows or Discord audio setting. The filter only replaces the
               audio track of the screen share.
@@ -152,6 +157,19 @@ jobs:
           from the repository (one command, keeps Vencord's updater working) or with your
           own Vencord build: copy it next to the plugin as shown above, or let
           \`scripts\\build-native.ps1\` build it from source.
+
+          **\`process-loopback-probe.exe\` — the diagnosis without Discord.** A console program that
+          performs the same process loopback activation the plugin uses (with the same agile completion
+          handler), prints every stage with its HRESULT, and can play a 1 kHz tone from its own process to
+          prove that PCM really arrives. It installs nothing, changes no setting and writes no audio to
+          disk:\`\`\`
+
+              process-loopback-probe.exe --list
+              process-loopback-probe.exe --self-tone --seconds 8
+              process-loopback-probe.exe --process spotify.exe --seconds 8
+
+          \`\`\`Use it before reporting a capture problem: a green run means the operating system provides
+          the capture, and a red one names the stage that refused it. Details in \`docs/PROBE.md\`.
 
           **Gates this build passed:** portable DSP and engine tests (\`g++\`), the TypeScript
           rule and interceptor tests, the MSVC build, and the same portable tests compiled and
