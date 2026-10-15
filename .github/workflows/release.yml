@@ -1,9 +1,10 @@
 name: Release
 
-# Publishing is driven by a tag, never by a developer machine: the binary that
-# reaches users is the one this run built, after the same gates as a normal
+# Publishing is driven by a tag, never by a developer machine: the files that
+# reach users are the ones these runs built, after the same gates as a normal
 # commit (portable DSP + engine tests, TypeScript tests, MSVC build and the tests
-# compiled by cl.exe). If any of them fails, no release is created.
+# compiled by cl.exe, and a prebuilt Vencord bundle that is checked for the
+# plugin). If any of them fails, no release is created.
 on:
   push:
     tags:
@@ -23,9 +24,17 @@ jobs:
       contents: write
     uses: ./.github/workflows/native.yml
 
+  # Reuses the bundle workflow: the "no build needed" archive is built and
+  # verified there, and this job only republishes it.
+  bundle:
+    name: Prebuilt Vencord bundle
+    permissions:
+      contents: write
+    uses: ./.github/workflows/bundle.yml
+
   publish:
-    name: Publish the Windows addon
-    needs: gate
+    name: Publish the addon and the bundle
+    needs: [gate, bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -43,13 +52,27 @@ jobs:
           name: streamaudiofilter-node-windows-x64
           path: dist
 
-      - name: Verify, checksum and describe the asset
+      - name: Download the prebuilt bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: streamaudiofilter-vencord-bundle
+          path: dist
+
+      - name: Verify, checksum and describe both assets
         run: |
           set -euo pipefail
           cd dist
-          test -f streamaudiofilter.node
-          ls -l streamaudiofilter.node
-          sha256sum streamaudiofilter.node | tee SHA256SUMS.txt
+          for asset in streamaudiofilter.node streamaudiofilter-vencord-dist.zip; do
+              test -f "$asset" || { echo "::error::$asset is missing from the artifacts"; exit 1; }
+              ls -l "$asset"
+          done
+          # The addon must be a real Windows binary, not an error page or an LFS stub.
+          head -c 2 streamaudiofilter.node | od -An -tx1 | grep -qi "4d 5a" \
+              || { echo "::error::streamaudiofilter.node is not a PE binary"; exit 1; }
+          unzip -l streamaudiofilter-vencord-dist.zip | grep -q "Vencord-dist/renderer.js" \
+              || { echo "::error::the bundle does not look like a Vencord dist"; exit 1; }
+          rm -f streamaudiofilter-vencord-dist.zip.sha256
+          sha256sum streamaudiofilter.node streamaudiofilter-vencord-dist.zip | tee SHA256SUMS.txt
 
       - name: Write the install note and the release notes
         run: |
@@ -74,6 +97,18 @@ jobs:
           scripts\build-native.ps1 from the repository: it needs Node.js and the
           MSVC build tools and downloads nothing.
 
+          If you have not installed the plugin itself yet
+          ---------------------------------------------
+          There are two ways, both in this release:
+
+            * streamaudiofilter-vencord-dist.zip — Vencord with the plugin
+              already built in. No Node.js, no compiler: unpack it, copy
+              Vencord-dist\* into %APPDATA%\Vencord\dist\, put this addon next
+              to it and restart Discord. See the README.txt inside the archive.
+            * scripts\install.ps1 from the repository — does the same by
+              building Vencord on your machine, which also keeps Vencord's own
+              updater working.
+
           Requirements
           ------------
             * Windows 10 x64 build 19041 (2004) or newer, or Windows 11.
@@ -93,12 +128,22 @@ jobs:
           EOF
 
           cat > /tmp/RELEASE-NOTES.md <<EOF
-          Native audio core of the StreamAudioFilter Vencord plugin, built by CI from the tag
-          \`$TAG\` (commit \`${GITHUB_SHA:0:7}\`) on a Windows runner.
+          Everything in this release was built by CI from the tag \`$TAG\`
+          (commit \`${GITHUB_SHA:0:7}\`): the native addon on a Windows runner, the prebuilt
+          Vencord distribution on Linux. Neither is uploaded by hand.
 
-          **Install:** copy \`streamaudiofilter.node\` to
-          \`%APPDATA%\\Vencord\\streamAudioFilter\\native\\\`. See \`INSTALL.txt\` among the
-          assets for its SHA-256 and for the requirements.
+          **\`streamaudiofilter-vencord-dist.zip\` — nothing to build.** Vencord with the
+          plugin already inside. Unpack it, copy \`Vencord-dist\\*\` into
+          \`%APPDATA%\\Vencord\\dist\\\`, put \`streamaudiofilter.node\` into
+          \`%APPDATA%\\Vencord\\streamAudioFilter\\native\\\`, restart Discord and enable the
+          plugin. Vencord's own updater is switched off in this build on purpose: it would
+          replace the whole directory and remove the plugin with it. Details are in the
+          archive's \`README.txt\`.
+
+          **\`streamaudiofilter.node\` — the addon only.** Use it with \`scripts\\install.ps1\`
+          from the repository (one command, keeps Vencord's updater working) or with your
+          own Vencord build: copy it next to the plugin as shown above, or let
+          \`scripts\\build-native.ps1\` build it from source.
 
           **Gates this build passed:** portable DSP and engine tests (\`g++\`), the TypeScript
           rule and interceptor tests, the MSVC build, and the same portable tests compiled and
@@ -115,9 +160,12 @@ jobs:
           of the asset in this release.
           EOF
 
-          hash=$(sha256sum dist/streamaudiofilter.node | cut -d' ' -f1)
-          printf '\n**SHA-256 of streamaudiofilter.node:**\n\n    %s\n' "$hash" >> /tmp/RELEASE-NOTES.md
-          echo "::notice title=SHA-256 of streamaudiofilter.node::$hash"
+          addon_hash=$(sha256sum dist/streamaudiofilter.node | cut -d' ' -f1)
+          bundle_hash=$(sha256sum dist/streamaudiofilter-vencord-dist.zip | cut -d' ' -f1)
+          printf '\n**SHA-256:**\n\n    streamaudiofilter.node              %s\n    streamaudiofilter-vencord-dist.zip %s\n' \
+              "$addon_hash" "$bundle_hash" >> /tmp/RELEASE-NOTES.md
+          echo "::notice title=SHA-256 of streamaudiofilter.node::$addon_hash"
+          echo "::notice title=SHA-256 of streamaudiofilter-vencord-dist.zip::$bundle_hash"
 
       - name: Publish
         run: |
@@ -127,11 +175,12 @@ jobs:
           status=0
           cd dist
           if gh release view "$TAG" >/dev/null 2>&1; then
-              gh release upload "$TAG" streamaudiofilter.node SHA256SUMS.txt INSTALL.txt \
-                  --clobber >/tmp/publish.log 2>&1 || status=$?
+              gh release upload "$TAG" streamaudiofilter.node streamaudiofilter-vencord-dist.zip \
+                  SHA256SUMS.txt INSTALL.txt --clobber >/tmp/publish.log 2>&1 || status=$?
           else
               gh release create "$TAG" \
-                  streamaudiofilter.node SHA256SUMS.txt INSTALL.txt \
+                  streamaudiofilter.node streamaudiofilter-vencord-dist.zip \
+                  SHA256SUMS.txt INSTALL.txt \
                   --title "StreamAudioFilter $TAG" \
                   --notes-file /tmp/RELEASE-NOTES.md \
                   --verify-tag >/tmp/publish.log 2>&1 || status=$?

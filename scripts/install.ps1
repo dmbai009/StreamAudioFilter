@@ -11,6 +11,7 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 #
 # Common variants:
+#   ... -Prebuilt v0.1.0                                   no build at all (no Node.js either)
 #   ... -AddonPath C:\Downloads\streamaudiofilter.node     use a prebuilt addon
 #   ... -DownloadAddon v0.1.0                              fetch it from the GitHub release
 #   ... -BuildAddon                                        compile it here (needs VS Build Tools)
@@ -35,6 +36,11 @@ param(
 
     # Only patch Discord again (after a Discord update) and exit.
     [switch] $Reinject,
+
+    # Install without building anything: download the prebuilt Vencord + plugin
+    # archive of that release tag (e.g. v0.1.0). Needs no Node.js, no compiler,
+    # no git -- just PowerShell and an internet connection.
+    [string] $Prebuilt = "",
 
     # Where the native addon comes from: all optional, at most one is used.
     [string] $AddonPath = "",
@@ -189,6 +195,26 @@ function Install-Addon($source) {
     Write-Info "SHA-256 $hash"
 }
 
+# Is Vencord already injected into Discord? The installer keeps the original
+# app.asar as _app.asar next to it, which is a cheap and reliable marker.
+function Test-DiscordPatched {
+    foreach ($base in @($env:LOCALAPPDATA, $env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if (-not $base) { continue }
+        foreach ($branch in @("Discord", "DiscordPTB", "DiscordCanary", "DiscordDevelopment")) {
+            $dir = Join-Path $base $branch
+            if (-not (Test-Path $dir)) { continue }
+            $apps = Get-ChildItem $dir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like "app-*" }
+            foreach ($app in $apps) {
+                if (Test-Path (Join-Path $app.FullName "resources\_app.asar")) {
+                    return $true
+                }
+            }
+        }
+    }
+    return $false
+}
+
 function Invoke-Inject {
     if (-not (Test-Path (Join-Path $VencordDir "node_modules"))) {
         Fail "Vencord is not installed in $VencordDir (no node_modules). Run the script without -Reinject first."
@@ -214,6 +240,79 @@ function Invoke-Inject {
     Write-Ok "Discord is patched with your build"
 }
 
+# The no-build route: prebuilt Vencord + plugin archive plus the addon, both
+# from a release of this repository. Nothing is compiled, nothing but those two
+# files is downloaded, and every download is confirmed first.
+function Install-Prebuilt($tag) {
+    $bundleName = "streamaudiofilter-vencord-dist.zip"
+    $distDir = Join-Path $env:APPDATA "Vencord\dist"
+
+    Write-Head "Prebuilt bundle ($tag)"
+    Write-Info "This route needs no Node.js, no compiler and no git."
+
+    $bundleUrl = "$RepoUrl/releases/download/$tag/$bundleName"
+    $addonUrl = "$RepoUrl/releases/download/$tag/$AddonName"
+    Write-Info "download: $bundleUrl"
+    Write-Info "          $addonUrl"
+    Write-Info "(both built by CI for the tag $tag; the release page lists their SHA-256)"
+    if (-not (Confirm "Download the prebuilt Vencord and the native addon now?")) {
+        Fail "Nothing to install without them. The files can also be downloaded by hand from $RepoUrl/releases."
+    }
+
+    $zip = Join-Path $env:TEMP $bundleName
+    Get-RemoteFile $bundleUrl $zip
+    $unpacked = Join-Path $env:TEMP "streamaudiofilter-bundle"
+    if (Test-Path $unpacked) {
+        Remove-Item -Recurse -Force $unpacked
+    }
+    Expand-Archive -Path $zip -DestinationPath $unpacked
+    $payload = Join-Path $unpacked "Vencord-dist"
+    if (-not (Test-Path (Join-Path $payload "patcher.js"))) {
+        Fail "the archive does not contain Vencord-dist\patcher.js — please report this."
+    }
+
+    New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+    Copy-Item -Recurse -Force (Join-Path $payload "*") $distDir
+    Write-Ok "Vencord with the plugin is in $distDir"
+
+    # Same verification as the build route: do not trust the archive blindly.
+    foreach ($part in @("patcher.js", "renderer.js")) {
+        $file = Join-Path $distDir $part
+        if (-not (Test-Path $file)) {
+            Fail "$file is missing after unpacking the bundle."
+        }
+    }
+    if (-not ((Select-String -Path (Join-Path $distDir "renderer.js") -Pattern "StreamAudioFilter" -Quiet) -and
+              (Select-String -Path (Join-Path $distDir "patcher.js") -Pattern "StreamAudioFilter" -Quiet))) {
+        Fail "the unpacked Vencord does not contain the plugin — please report this."
+    }
+    Write-Ok "checked: the plugin is inside the unpacked Vencord"
+
+    $addonTemp = Join-Path $env:TEMP $AddonName
+    Get-RemoteFile $addonUrl $addonTemp
+    Install-Addon $addonTemp
+    Remove-Item -Force $addonTemp, $zip
+
+    if (-not (Test-DiscordPatched)) {
+        Write-Host ""
+        Write-Note "Discord does not look patched yet (no _app.asar next to app.asar)."
+        Write-Note "Run the official Vencord installer once — https://vencord.dev/download —"
+        Write-Note "and start it again afterwards. Vencord then loads exactly these files."
+    } else {
+        Write-Ok "Discord is already patched, it will load this Vencord"
+    }
+
+    Write-Host ""
+    Write-Host "Next:"
+    Write-Host "  1. Start (or restart) Discord."
+    Write-Host "  2. Settings -> Plugins -> enable StreamAudioFilter."
+    Write-Host "  3. Open its panel and press `"Check support`" in the diagnostics."
+    Write-Host ""
+    Write-Host "Remember: Vencord's own updater is switched off inside this bundle, so an"
+    Write-Host "update never removes the plugin. For a newer Vencord, download a newer"
+    Write-Host "release of this repository and run this command again."
+}
+
 # --------------------------------------------------------------------------
 # 0. What happens now
 # --------------------------------------------------------------------------
@@ -227,6 +326,12 @@ if (-not $PSBoundParameters.ContainsKey("VencordDir")) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+
+if ($Prebuilt) {
+    Install-Prebuilt $Prebuilt
+    exit 0
+}
+
 if (-not (Test-Path (Join-Path $repoRoot "index.tsx"))) {
     # The script was copied out of the repository (that is a supported way to
     # use it): the plugin sources are fetched as a plain source archive.

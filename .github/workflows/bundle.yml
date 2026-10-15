@@ -1,0 +1,177 @@
+name: Prebuilt Vencord bundle
+
+# Builds "Vencord + StreamAudioFilter" as a ready to use distribution, so that a
+# user can install the plugin without Node.js, without a compiler and without
+# running a build: unpack the bundle into %APPDATA%\Vencord\dist, drop the
+# native addon next to it, restart Discord.
+#
+# The same job runs for pull requests, so the bundle cannot rot unnoticed: if a
+# change stops the plugin from ending up in the bundle, this job fails.
+
+on:
+  workflow_call:
+  push:
+    branches:
+      - "**"
+    paths:
+      - "apps/**"
+      - "audio/**"
+      - "components/**"
+      - "stream/**"
+      - "ui/**"
+      - "*.ts"
+      - "*.tsx"
+      - "style.css"
+      - ".github/workflows/bundle.yml"
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # The Vencord release the bundle is built from. The bundle disables Vencord's
+  # own updater on purpose (see the build step), so this pin is what users get
+  # until a new release of this repository is published: bump it deliberately,
+  # then tag a release.
+  VENCORD_REF: v1.15.11
+
+jobs:
+  bundle:
+    name: Vencord + plugin (no build on the user's machine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch Vencord ${{ env.VENCORD_REF }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$VENCORD_REF" https://github.com/Vencord/Vencord vencord
+          echo "VENCORD_COMMIT=$(git -C vencord rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "Vencord package version: $(grep -m1 '"version"' vencord/package.json)"
+
+      - name: Vencord dependencies
+        run: |
+          set -euo pipefail
+          cd vencord
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      - name: Place the plugin into src/userplugins
+        run: |
+          set -euo pipefail
+          mkdir -p vencord/src/userplugins/StreamAudioFilter
+          # The checkout of this repository, minus what must never be copied.
+          rsync -a --exclude .git --exclude node_modules --exclude build --exclude ci-out \
+              ./ vencord/src/userplugins/StreamAudioFilter/
+          test -f vencord/src/userplugins/StreamAudioFilter/index.tsx
+          test -f vencord/src/userplugins/StreamAudioFilter/native.ts
+
+      - name: Build the distribution
+        run: |
+          set -euo pipefail
+          cd vencord
+          # --standalone: the same flavour the official Vencord installer ships
+          #   (the bundle is placed into %APPDATA%\Vencord\dist, where a
+          #   non-standalone build would expect a source tree to update from);
+          # --disable-updater: Vencord's updater downloads the official build and
+          #   replaces this entire dist on the next update, which would silently
+          #   delete the plugin. This bundle is a pinned distribution instead:
+          #   updates come from a new release of this repository.
+          pnpm build --standalone --disable-updater
+
+      - name: Verify the bundle really contains the plugin
+        run: |
+          set -euo pipefail
+          grep -q "StreamAudioFilter" vencord/dist/renderer.js
+          grep -q "StreamAudioFilter" vencord/dist/patcher.js
+          # The updater must not be inside: it is the one thing that would
+          # silently remove the plugin again.
+          if grep -q "VencordGetUpdates" vencord/dist/patcher.js; then
+              echo "::error::the updater is still inside the bundle — a Vencord update would remove the plugin"
+              exit 1
+          fi
+          echo "the bundle contains the plugin and cannot be overwritten by Vencord's updater"
+
+      - name: Pack
+        run: |
+          set -euo pipefail
+          mkdir -p bundle/Vencord-dist
+          cp vencord/dist/* bundle/Vencord-dist/
+          # Source maps are a third of the download and useless to a user.
+          find bundle -name '*.map' -delete
+
+          {
+              echo "Vencord ref:    $VENCORD_REF"
+              echo "Vencord commit: $VENCORD_COMMIT"
+              echo "Plugin commit:  $GITHUB_SHA"
+              echo "Built:          $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > bundle/VENCORD-VERSION.txt
+
+          cat > bundle/README.txt <<'EOF'
+          Vencord + StreamAudioFilter
+          ==========================
+
+          This is Vencord with the StreamAudioFilter plugin already built into it,
+          so nothing has to be compiled on your machine. What is inside:
+
+            Vencord-dist\        the Vencord build (put these files into %APPDATA%\Vencord\dist)
+            VENCORD-VERSION.txt  which Vencord commit this is and when it was built
+            README.txt           this file
+
+          Install (Windows)
+          -----------------
+            1. Have Vencord injected into Discord. If you have not done that yet,
+               run the official installer from https://vencord.dev/download once.
+               (It is also what removes the patch again later.)
+
+            2. Copy everything inside Vencord-dist\ into:
+                   %APPDATA%\Vencord\dist\
+               Overwrite the files that are already there. In PowerShell:
+
+                   Copy-Item -Recurse -Force .\Vencord-dist\* "$env:APPDATA\Vencord\dist\"
+
+            3. Put the native audio addon of the same release into:
+                   %APPDATA%\Vencord\streamAudioFilter\native\streamaudiofilter.node
+               The folder is created by the plugin on its first start; the addon
+               is the file streamaudiofilter.node from the release page, next to
+               this archive, and its SHA-256 is printed there.
+
+            4. Start Discord, open Settings -> Plugins, enable StreamAudioFilter,
+               open its panel and press "Check support" in the diagnostics.
+
+          Updates
+          -------
+          Vencord's own updater is switched off in this build on purpose: it would
+          replace the whole dist with the official one and remove the plugin with
+          it. To move to a newer Vencord, download a newer release of this
+          repository and repeat steps 2 and 3. If you re-run the official Vencord
+          installer or use its "Repair" option, it also replaces these files.
+
+          Requirements
+          ------------
+            * Windows 10 x64 build 19041 (2004) or newer, or Windows 11.
+            * Discord Desktop (Stable, PTB or Canary) with Vencord injected.
+            * No administrator rights; no virtual audio device; no change to any
+              Windows or Discord audio setting. The filter only replaces the audio
+              track of a screen share.
+
+          Licence: GPL-3.0-or-later. This bundle contains Vencord
+          (https://github.com/Vencord/Vencord), which is GPL-3.0-or-later as well,
+          together with its third party notices (the *.LEGAL.txt files).
+          EOF
+
+          cd bundle
+          zip -qr "$GITHUB_WORKSPACE/streamaudiofilter-vencord-dist.zip" .
+          cd "$GITHUB_WORKSPACE"
+          sha256sum streamaudiofilter-vencord-dist.zip | tee streamaudiofilter-vencord-dist.zip.sha256
+          unzip -l streamaudiofilter-vencord-dist.zip
+
+      - name: Upload the bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamaudiofilter-vencord-bundle
+          path: |
+            streamaudiofilter-vencord-dist.zip
+            streamaudiofilter-vencord-dist.zip.sha256
