@@ -104,7 +104,7 @@ export function FilterControls({ compact = false }: { compact?: boolean; }) {
             <div className={cl("toolbar")}>
                 <ModeSelector />
                 <Flex flexDirection="row" gap="0.4em">
-                    <Button size="small" variant="secondary" onClick={() => void store.refresh()}>
+                    <Button size="small" variant="secondary" onClick={() => void store.refresh(true)}>
                         Обновить список
                     </Button>
                     <Button size="small" variant="secondary" onClick={() => void store.resetFilters()}>

@@ -301,11 +301,17 @@ class Store {
         }
     }
 
-    /** Re-reads the application list and the engine statistics. */
-    async refresh(): Promise<void> {
+    /**
+     * Re-reads the application list and the engine statistics.
+     *
+     * @param force ask the native engine to enumerate again instead of returning
+     *              the list it already has (used by "Обновить список")
+     */
+    async refresh(force = false): Promise<void> {
         if (this.refreshing) return;
         if (!this.state.engineRunning) return;
         this.refreshing = true;
+        if (force) await Native.refreshApps();
 
         try {
             const [apps, stats] = await Promise.all([Native.listApps(), Native.getStats()]);
