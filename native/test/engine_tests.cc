@@ -167,6 +167,7 @@ static void testModeA() {
     fixture.enumerator->setApps({ makeApp("exe:game", "Game", 100, 1), makeApp("exe:spotify", "Spotify", 200, 1) });
 
     RuleSet rules;
+    rules.active = true;
     rules.mode = RuleSet::Mode::AllExcept;
     fixture.engine->setRules(rules);
 
@@ -230,6 +231,7 @@ static void testModeB() {
     fixture.enumerator->setApps({ makeApp("exe:game", "Game", 100, 1), makeApp("exe:spotify", "Spotify", 200, 1) });
 
     RuleSet rules;
+    rules.active = true;
     rules.mode = RuleSet::Mode::OnlySelected;
     fixture.engine->setRules(rules);
 
@@ -269,6 +271,7 @@ static void testClosingApp() {
     fixture.enumerator->setApps({ makeApp("exe:game", "Game", 100, 1), makeApp("exe:music", "Music", 200, 1) });
 
     RuleSet rules;
+    rules.active = true;
     rules.mode = RuleSet::Mode::AllExcept;
     fixture.engine->setRules(rules);
     CHECK(waitFor([&] { return fixture.engine->stats().activeStreams == 2; }), "two streams running");
@@ -295,6 +298,7 @@ static void testStreamLimit() {
     fixture.enumerator->setApps(apps);
 
     RuleSet rules;
+    rules.active = true;
     fixture.engine->setRules(rules);
 
     CHECK(waitFor([&] { return fixture.engine->stats().activeStreams == 8; }), "limit respected, got %zu",
@@ -313,6 +317,7 @@ static void testMixingLevels() {
     EngineFixture fixture;
     fixture.enumerator->setApps({ makeApp("exe:a", "A", 100, 1), makeApp("exe:b", "B", 200, 1), makeApp("exe:c", "C", 300, 1) });
     RuleSet rules;
+    rules.active = true;
     fixture.engine->setRules(rules);
 
     CHECK(waitFor([&] { return fixture.engine->stats().activeStreams == 3; }, 2000), "three streams captured");
@@ -341,6 +346,39 @@ static void testMixingLevels() {
     CHECK(total >= 480 * 15, "sustained output, got %zu frames", total);
 }
 
+static void testCaptureGate() {
+    section("capture gate (plugin must be quiet while nothing is shared)");
+
+    EngineFixture fixture;
+    fixture.enumerator->setApps({ makeApp("exe:game", "Game", 100, 1), makeApp("exe:music", "Music", 200, 1) });
+
+    RuleSet rules;
+    rules.mode = RuleSet::Mode::AllExcept;
+    rules.active = false;
+    fixture.engine->setRules(rules);
+
+    // The application list must still be visible (the panels need it), but no
+    // audio may be captured at all.
+    CHECK(waitFor([&] {
+        auto list = fixture.engine->apps();
+        return list.size() == 2;
+    }), "applications are listed while inactive");
+    std::this_thread::sleep_for(milliseconds(150));
+    CHECK(fixture.engine->stats().activeStreams == 0, "nothing captured while inactive, got %zu",
+          fixture.engine->stats().activeStreams);
+
+    rules.active = true;
+    fixture.engine->setRules(rules);
+    CHECK(waitFor([&] { return fixture.engine->stats().activeStreams == 2; }), "capture starts when the gate opens");
+
+    rules.active = false;
+    fixture.engine->setRules(rules);
+    CHECK(waitFor([&] { return fixture.engine->stats().activeStreams == 0; }, 2000), "capture stops when the gate closes, got %zu",
+          fixture.engine->stats().activeStreams);
+    std::this_thread::sleep_for(milliseconds(100));
+    CHECK(fixture.engine->stats().outputFrames > 0, "output stream stays alive (no restart needed)");
+}
+
 int main() {
     std::printf("StreamAudioFilter engine tests\n\n");
     testAppIdentity();
@@ -349,6 +387,7 @@ int main() {
     testClosingApp();
     testStreamLimit();
     testMixingLevels();
+    testCaptureGate();
     std::printf("\n%d checks, %d failure(s)\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

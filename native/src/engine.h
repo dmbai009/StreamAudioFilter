@@ -53,8 +53,15 @@ struct RuleSet {
     Mode mode = Mode::AllExcept;
     std::map<std::string, bool> overrides;
 
+    /**
+     * Capture gate: while no screen share is running the engine only watches the
+     * application list and captures nothing at all.
+     */
+    bool active = false;
+
     /** Resolves the effective decision for an application. */
     bool transmit(const std::string& appKey) const {
+        if (!active) return false;
         const auto it = overrides.find(appKey);
         if (it != overrides.end()) return it->second;
         return mode == Mode::AllExcept;

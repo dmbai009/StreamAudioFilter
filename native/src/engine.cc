@@ -325,7 +325,7 @@ std::vector<AppView> Engine::apps() {
         view.notCapturableReason = group.notCapturableReason;
         view.ephemeral = isEphemeralKey(group.appKey);
         view.running = true;
-        view.transmitting = rules.transmit(group.appKey) && group.capturable;
+        view.transmitting = rules.active && rules.transmit(group.appKey) && group.capturable;
         view.peak = std::max(group.peak, 0.0f);
 
         const auto streamIt = live.find(group.appKey);

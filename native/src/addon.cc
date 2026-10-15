@@ -196,6 +196,7 @@ napi_value SetRules(napi_env env, napi_callback_info info) {
         if (type == napi_object) {
             const int32_t mode = getIntProperty(env, args[0], "mode", 0);
             rules.mode = mode == 1 ? RuleSet::Mode::OnlySelected : RuleSet::Mode::AllExcept;
+            rules.active = getBoolProperty(env, args[0], "active", true);
 
             napi_value overrides = nullptr;
             if (napi_get_named_property(env, args[0], "overrides", &overrides) == napi_ok) {
