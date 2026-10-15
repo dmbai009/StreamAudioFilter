@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "../app_identity.h"
+#include "audio_subformat.h"
 #include "com_ptr.h"
 #include "win_internal.h"
 #include "windows_backend.h"

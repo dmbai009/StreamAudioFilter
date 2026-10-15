@@ -63,6 +63,15 @@ jobs:
           build\msvc\engine_tests.exe >> ..\ci-out\msvc-tests.log 2>&1
           type ..\ci-out\msvc-tests.log
 
+      - name: Check that the addon was produced
+        shell: bash
+        run: |
+          if [ ! -f native/build/Release/streamaudiofilter.node ]; then
+              echo "::error::the native addon was not built — see ci-out/addon-build.log"
+              exit 1
+          fi
+          ls -l native/build/Release/streamaudiofilter.node
+
       - name: Upload addon
         if: always()
         uses: actions/upload-artifact@v4
