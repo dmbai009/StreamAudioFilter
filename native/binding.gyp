@@ -12,6 +12,7 @@
                 "src/dsp/resampler.cc",
                 "src/dsp/ring_buffer.cc",
                 "src/mock/mock_backend.cc",
+                "src/win/com_iids.h",
                 "src/win/process_loopback.cc",
                 "src/win/session_watcher.cc",
                 "src/win/windows_util.cc"
@@ -54,6 +55,7 @@
                     "OS!='win'",
                     {
                         "sources!": [
+                            "src/win/com_iids.h",
                             "src/win/process_loopback.cc",
                             "src/win/session_watcher.cc",
                             "src/win/windows_util.cc"
