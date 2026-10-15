@@ -139,23 +139,28 @@ jobs:
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSINSTALL=%%i
           call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul
+          cd native
+          if not exist ..\ci-out mkdir ..\ci-out
           if not exist build\probe mkdir build\probe
-          cl /nologo /std:c++17 /EHsc /W4 /D_USE_MATH_DEFINES /DNOMINMAX /DWIN32_LEAN_AND_MEAN /Fo:build\probe\ ^
-             /Fe:build\probe\process-loopback-probe.exe ^
-             tools\process_loopback_probe\main.cc src\hr_advice.cc ^
-             /link ole32.lib oleaut32.lib uuid.lib mmdevapi.lib
-          if errorlevel 1 exit /b 1
-          if not exist build\probe\process-loopback-probe.exe exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /D_USE_MATH_DEFINES /DNOMINMAX /DWIN32_LEAN_AND_MEAN /Fo:build\probe\ /Fe:build\probe\process-loopback-probe.exe tools\process_loopback_probe\main.cc src\hr_advice.cc /link ole32.lib oleaut32.lib uuid.lib mmdevapi.lib > ..\ci-out\probe-build.log 2>&1
+          if errorlevel 1 (
+              echo === the probe did not compile ===
+              type ..\ci-out\probe-build.log
+              for /f "delims=" %%l in ('findstr /C:"error" ..\ci-out\probe-build.log') do echo ::error title=probe build::%%l
+              exit /b 1
+          )
           build\probe\process-loopback-probe.exe --help
           if errorlevel 1 exit /b 1
+          echo probe built (usage path answers)
 
-      - name: Probe smoke test (help and process list only)
+      - name: Probe smoke test (process list only)
         shell: cmd
         run: |
-          rem The probe itself is NOT run against a live capture here: a headless
-          rem runner has no audio endpoint, which would turn a guaranteed silence
-          rem into a false failure. It is compiled and invoked in its usage path,
-          rem and the user runs it on a real machine (docs/PROBE.md).
+          cd native
+          rem The probe is NOT pointed at a live capture here: a headless runner has
+          rem no audio endpoint, and a guaranteed silence would look like a capture
+          rem failure. It is compiled and exercised in its non capture paths, and
+          rem the capture itself is run by the user on a real machine (docs/PROBE.md).
           build\probe\process-loopback-probe.exe --list >nul
           if errorlevel 1 exit /b 1
           echo the probe starts and enumerates processes
