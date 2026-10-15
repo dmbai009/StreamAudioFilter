@@ -1,16 +1,19 @@
 /*
- * StreamAudioFilter — per application audio filtering for screen shares
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/**
  *
+ * StreamAudioFilter — per application audio filtering for screen shares.
  * Turns the mixed PCM from the native engine into a genuine MediaStreamTrack
  * that Discord can put into the screen share.
- *
  * Why not a virtual audio device? A virtual device would show up as an input
  * device, would have to be selected by the user and would violate the
  * requirements of the project (no virtual devices, no device changes). A track
  * created here lives only inside the renderer: Discord sends exactly this audio,
  * nothing is added to the system, and the local playback is untouched.
- *
  * The output is one continuous Web Audio graph whose composition changes when
  * applications are added or removed — never a restart per change.
  */

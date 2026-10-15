@@ -1,17 +1,19 @@
 /*
- * StreamAudioFilter — per application audio filtering for screen shares
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/**
  *
+ * StreamAudioFilter — per application audio filtering for screen shares.
  * Getting our audio into the screen share.
- *
  * Discord's desktop client obtains screen share media through the standard
  * WebRTC entry points of the renderer. We wrap exactly those entry points and
  * replace the audio track Discord would have received from the system with the
  * filtered track from the native engine:
- *
  *     getDisplayMedia({video: ..., audio: ...})   ->  same video, our audio
  *     getUserMedia({audio: {mandatory: {chromeMediaSource: "desktop"}}})
- *
  * Consequences:
  *  * Discord's own "Передавать звук" switch keeps working: when Discord does not
  *    ask for audio, no audio track is added by us (we never force it on).
@@ -48,7 +50,7 @@ interface MediaDevicesLike {
 /** True when the caller asked for audio at all. */
 function wantsAudio(options: DisplayMediaStreamOptions | undefined): boolean {
     if (!options) return false;
-    const audio = (options as { audio?: unknown; }).audio;
+    const { audio } = (options as { audio?: unknown; });
     return audio === true || (typeof audio === "object" && audio !== null);
 }
 
@@ -56,7 +58,7 @@ function wantsAudio(options: DisplayMediaStreamOptions | undefined): boolean {
 function isDesktopAudioRequest(constraints: MediaStreamConstraints | undefined): boolean {
     const audio = constraints?.audio;
     if (!audio || typeof audio !== "object") return false;
-    const mandatory = (audio as { mandatory?: Record<string, unknown>; }).mandatory;
+    const { mandatory } = (audio as { mandatory?: Record<string, unknown>; });
     if (!mandatory) return false;
     const source = mandatory.chromeMediaSource;
     return typeof source === "string" && DESKTOP_AUDIO_SOURCES.includes(source);

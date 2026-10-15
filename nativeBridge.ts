@@ -1,7 +1,12 @@
 /*
- * StreamAudioFilter — per application audio filtering for screen shares
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/**
  *
+ * StreamAudioFilter — per application audio filtering for screen shares.
  * Typed access to the main process side. Everything the renderer needs from the
  * native engine goes through this one module, which also keeps the plugin usable
  * (with a clear message) when Vencord runs in a browser, where no native side
@@ -9,19 +14,23 @@
  */
 
 import { PluginNative } from "@utils/types";
-import { VencordNative } from "@webpack/common";
 
 import type { AppInfo, EngineStartOptions, EngineStats, MockApp, NativeEnvironment, RuleSetPayload, StartResult, SupportInfo } from "./types";
 
 type NativeApi = PluginNative<typeof import("./native")>;
 
-const helpers = (VencordNative as any)?.pluginHelpers ?? {};
-const native = (helpers.StreamAudioFilter ?? null) as NativeApi | null;
+/**
+ * VencordNative is a global that only exists in the desktop client; in the
+ * browser build it is a stub, so both cases are handled here and the UI says
+ * "недоступно" instead of throwing.
+ */
+const helpers = (typeof VencordNative === "undefined" ? null : VencordNative.pluginHelpers) as Record<string, NativeApi> | null;
+const native = helpers?.StreamAudioFilter ?? null;
 
 export const IS_NATIVE_AVAILABLE = native != null;
 
 function unavailable<T>(fallback: T, what: string): Promise<T> {
-    // eslint-disable-next-line no-console
+
     console.warn(`[StreamAudioFilter] ${what} недоступно: нативная часть работает только в настольном Discord`);
     return Promise.resolve(fallback);
 }
@@ -43,9 +52,12 @@ export const Native = {
         return native.getEnvironment();
     },
 
-    listApps(): Promise<AppInfo[]> {
+    async listApps(): Promise<AppInfo[]> {
         if (!native) return unavailable<AppInfo[]>([], "список приложений");
-        return native.listApps();
+        const apps = await native.listApps();
+        // The engine reports the peak level as an integer 0..1000 to keep the
+        // JSON small; the UI works with 0..1.
+        return apps.map(app => ({ ...app, peak: (app.peak ?? 0) / 1000 }));
     },
 
     getStats(): Promise<EngineStats | null> {

@@ -1,7 +1,12 @@
 /*
- * StreamAudioFilter — per application audio filtering for screen shares
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/**
  *
+ * StreamAudioFilter — per application audio filtering for screen shares.
  * Rule resolution. Deliberately pure (no imports, no Vencord, no DOM) so the
  * semantics of both filtering modes can be unit tested.
  */

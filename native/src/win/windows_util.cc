@@ -8,6 +8,7 @@
 #include <ksmedia.h>
 #include <mmdeviceapi.h>
 #include <tlhelp32.h>
+#include <verrsrc.h>
 #include <windows.h>
 
 #include <cstdio>

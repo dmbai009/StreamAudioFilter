@@ -1,9 +1,13 @@
 /*
- * StreamAudioFilter — per application audio filtering for screen shares
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/**
  *
+ * StreamAudioFilter — per application audio filtering for screen shares.
  * Renderer state: environment, rules, live application list, stream status.
- *
  * One store instance is shared by every panel (settings page, popout, floating
  * panel, toolbox) so all entry points always show the same state — that is a
  * requirement, and it also means only one poll loop exists.
@@ -11,8 +15,7 @@
 
 import { React } from "@webpack/common";
 
-import type { FilteredTrack } from "../audio/sourceTrack";
-import { createFilteredTrack } from "../audio/sourceTrack";
+import { createFilteredTrack, type FilteredTrack } from "../audio/sourceTrack";
 import { DataStore } from "../dataStore";
 import { Engine, Native } from "../nativeBridge";
 import type { AppInfo, EngineStats, NativeEnvironment, RulesState, StreamStatus } from "../types";
@@ -136,7 +139,7 @@ class Store {
     }
 
     async resetFilters(): Promise<void> {
-        const environment = this.state.environment;
+        const { environment } = this.state;
         this.set({ rules: seedDefaults(resetRules(this.state.rules), environment?.discordExecutable ?? "") });
         await this.persist();
         await this.applyRules();

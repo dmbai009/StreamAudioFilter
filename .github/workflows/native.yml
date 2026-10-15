@@ -34,6 +34,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p ci-out
+          set +e
           ( cd native && npx --yes node-gyp rebuild --verbose 2>&1 ) | tee ci-out/addon-build-raw.log
           status=${PIPESTATUS[0]}
           if [ "$status" != "0" ]; then
