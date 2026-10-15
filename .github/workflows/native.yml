@@ -1,7 +1,14 @@
 name: Native audio core
 
 on:
+  # Reused by .github/workflows/release.yml, which only publishes what this
+  # workflow has built and tested.
+  workflow_call:
   push:
+    # Branches only: a tag is handled by the release workflow, which calls this
+    # one and then attaches the resulting addon to the release.
+    branches:
+      - "**"
     paths:
       - "native/**"
       - "scripts/**"
