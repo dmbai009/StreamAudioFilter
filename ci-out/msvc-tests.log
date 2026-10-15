@@ -46,7 +46,7 @@ StreamAudioFilter engine tests
 == mixing output
 == multi instance applications: roots, splitting, no duplication
 == engine: two instances of one application
-  restart took 189 ms, peak levels 0.134 / 0.258
+  restart took 174 ms, peak levels 0.257 / 0.257
 == engine: child process is not captured as a second instance
 == capture gate (plugin must be quiet while nothing is shared)
 == diagnostics
