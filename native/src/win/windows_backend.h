@@ -17,6 +17,12 @@
 
 #pragma once
 
+// The declarations below use HRESULT and std::unique_ptr, so this header stays
+// usable on its own (it is the facade every Windows translation unit includes).
+#include <windows.h>
+
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 

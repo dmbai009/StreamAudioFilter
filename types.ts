@@ -1,7 +1,12 @@
 /*
- * StreamAudioFilter — per application audio filtering for screen shares
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/**
  *
+ * StreamAudioFilter — per application audio filtering for screen shares.
  * Types shared between the renderer (index.tsx and everything below it) and the
  * main process side (native.ts). This file must stay free of imports so both
  * sides can use it.

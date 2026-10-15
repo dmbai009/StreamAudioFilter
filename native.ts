@@ -1,21 +1,25 @@
 /*
- * StreamAudioFilter — per application audio filtering for screen shares
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/**
  *
+ * StreamAudioFilter — per application audio filtering for screen shares.
  * Main process side. Everything that needs node/electron lives here:
  *  * loading (and explaining) the native addon,
  *  * the capability probe,
  *  * pulling the mixed PCM for the renderer,
  *  * application icons via Electron's own icon extraction (no extra code).
- *
  * The renderer talks to this file through VencordNative.pluginHelpers
  * .StreamAudioFilter.<method>.
  */
 
 import { RendererSettings } from "@main/settings";
-import { createRequire } from "module";
 import { app, dialog, shell } from "electron";
 import { existsSync, readdirSync } from "fs";
+import { createRequire } from "module";
 import { join } from "path";
 
 import type {
