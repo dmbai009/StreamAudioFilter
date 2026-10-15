@@ -1,192 +1,220 @@
 # StreamAudioFilter
 
-Плагин для [Vencord](https://github.com/Vencord/Vencord), который выбирает, **звук каких приложений
-слышат зрители демонстрации экрана** в обычном настольном Discord (Windows 10 x64 / Windows 11).
+A [Vencord](https://github.com/Vencord/Vencord) plugin that decides **which applications the viewers of
+a screen share actually hear**, inside the normal desktop Discord client (Windows 10 x64 / Windows 11).
 
-Пример из задачи: вы демонстрируете весь монитор. Игра и браузер попадают в трансляцию, Spotify и
-Telegram — нет. При этом вы сами продолжаете слышать всё, микрофон и голосовой канал не меняются.
+The original example: you share your whole monitor. The game and the browser end up in the share;
+Spotify and Telegram do not. You keep hearing everything, and neither your microphone nor the voice
+call is affected.
 
 ```
-        приложения                    движок плагина                 Discord
+      applications                  plugin engine                     Discord
   ┌────────────────────┐        ┌──────────────────────────┐   ┌──────────────────┐
-  │ игра        ●──────┼──┐     │ WASAPI process loopback  │   │ демонстрация     │
-  │ браузер     ●──────┼──┼────▶│ → собственный микшер     │──▶│ экрана + звук    │
-  │ Spotify     ○──────┼──┘     │ → один поток PCM         │   │ = то, что слышат │
-  │ Telegram    ○──────┼────┐   │ правила применяются      │   │   зрители        │
-  └────────────────────┘    │   │ «на лету», без пауз      │   └──────────────────┘
-                            └──▶│ (не попадает в микс)     │        ▲
-  ваш локальный звук ───────────┴──────────────────────────┴────────┘ видео не трогаем
+  │ game        ●──────┼──┐     │ WASAPI process loopback  │   │ screen share     │
+  │ browser     ●──────┼──┼────▶│ → own mixer              │──▶│ + audio          │
+  │ Spotify     ○──────┼──┘     │ → one PCM stream         │   │ = what viewers   │
+  │ Telegram    ○──────┼────┐   │ rules applied on the fly │   │   hear           │
+  └────────────────────┘    │   │ without any pause        │   └──────────────────┘
+                            └──▶│ (never enters the mix)   │        ▲
+  your local playback ──────────┴──────────────────────────┴────────┘ video untouched
 ```
 
 ---
 
-## 1. Что важно знать перед установкой
+## 1. What to know before installing
 
-**Требуется Windows 10 сборки 20348 или новее, либо Windows 11.** Захват звука отдельных
-приложений (`WASAPI process loopback`) появился именно в этих сборках. На «обычной» Windows 10
-(19041–19045) фильтрация по приложениям технически невозможна — ни этим плагином, ни любым другим:
-см. [docs/LIMITATIONS.md](docs/LIMITATIONS.md), где это разобрано с ссылками на документацию
-Microsoft и с тем, как проверить свою сборку одной командой.
+**Windows 10 version 2004 (build 19041) or newer, or Windows 11, is required.** Capturing the audio of
+individual applications (`WASAPI process loopback`) works from that build on: it is exactly what OBS
+requires for its "Application Audio Capture" source. Microsoft's documentation names "build 20348" as
+the minimum — that is the build the API was *documented* on, not the one it appeared on; the reasoning,
+with links, and a way to test your own system, is in [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
-Плагин в этом случае ничего не подменяет «втихую»: он показывает причину, выполняет реальную
-проверку поддержки (а не догадку) и оставляет трансляцию Discord как есть.
+What decides is not a guess and not the build number but a **real activation attempt**: the
+"Check support" button in the diagnostics section starts an actual `ProcessLoopbackCapture` and shows
+either success or the error code. If the system cannot do it, the plugin does not replace the filtering
+with a workaround, it says so.
 
-**Плагин не создаёт виртуальных аудиоустройств, не требует VB-Cable/Voicemeeter, не меняет системные
-настройки звука, устройства записи и воспроизведения Discord, не имеет дела с микрофоном и не просит
-прав администратора.**
+**The plugin creates no virtual audio devices, needs no VB-Cable/Voicemeeter, changes no Windows sound
+settings, does not touch Discord's recording or playback devices, never goes near the microphone and
+asks for no administrator rights.**
 
 ---
 
-## 2. Возможности
+## 2. What it does
 
-### Два режима
+### Two modes
 
-| Режим | Поведение | Новые приложения |
+| Mode | Behaviour | New applications |
 |---|---|---|
-| **«Всё, кроме выбранного»** (по умолчанию) | передаётся звук всех приложений, кроме выключенных вами | включаются автоматически |
-| **«Только выбранные»** | передаётся только то, что включено вручную | молчат, пока их не разрешат |
+| **"Everything except excluded"** (default) | the audio of every application is sent, except the ones you switched off | included automatically |
+| **"Only included"** | only what you switched on is sent | silent until you allow them |
 
-Переключение режима **не сбрасывает** сохранённый выбор: правило каждого приложения хранится
-отдельно, режим определяет лишь судьбу приложений, которых вы никогда не касались.
+Switching the mode **does not reset** the stored selection: every application keeps its own rule, the
+mode only decides the fate of the applications you never touched.
 
-### Живые изменения во время трансляции
+### Live changes during a share
 
-Выключить Spotify в середине трансляции — зрители перестают слышать музыку через ~20–40 мс, вы
-продолжаете её слышать. Включить обратно — так же быстро. Видео, голосовой канал и остальные
-источники звука не прерываются: микшируется **один непрерывный поток**, меняется только его состав.
+Switching Spotify off in the middle of a share makes the viewers stop hearing the music within about
+20–40 ms, while you keep hearing it. Switching it back on is just as fast. The video, the voice call and
+every other audio source never break: **one continuous stream** is mixed, only its composition changes.
 
-### Точки входа (все показывают одно и то же состояние)
+### Failing closed, not open
 
-1. **Настройки → Плагины → StreamAudioFilter** — полная панель: режим, список приложений,
-   переключатели, состояние захвата, ошибки, диагностика.
-2. **Кнопка рядом с микрофоном/наушниками** внизу окна Discord — компактный список в поповере
-   (можно отключить в настройках плагина).
-3. **Плавающая панель** — небольшое окно, которое появляется автоматически, когда Discord
-   запрашивает звук демонстрации: удобно менять состав «на лету», ничего не открывая. Сворачивается
-   во время трансляции, чтобы не мешать (настраивается).
-4. **Vencord Toolbox** — если плагин включён, в меню Toolbox появляются два действия
-   (показать панель, сбросить фильтры).
+If the filtering could not be applied (the engine did not start, the addon was not built, the system
+does not support the capture), the plugin does **not** hand the viewers the ordinary system audio: it
+removes the audio from the share and shows the reason. Otherwise "Spotify is excluded" would turn into
+"the viewers hear Spotify the moment something breaks" — the exact opposite of what was asked for.
 
-Почему нет кнопки внутри окна запуска трансляции и внутри интерфейса идущей трансляции: эти
-экраны не имеют публичного API, а патчить их «наугад» — значит ломать демонстрацию экрана у
-пользователя при каждом обновлении Discord. Вместо этого панель управления появляется сама в
-момент, когда Discord берёт звук для трансляции. Подробнее: [docs/UI.md](docs/UI.md).
+The opposite behaviour exists, but only as a deliberate choice of the user: the setting "Send plain
+system audio when filtering is unavailable" (off by default) — and then the panel honestly says that
+unfiltered audio is being sent.
 
-### Список приложений
+One more case: if Discord obtained the audio in a way the plugin does not intercept, the panel reports
+it as an error (such a stream cannot be filtered — the plugin cannot mute what it never saw).
 
-* автоматическое сканирование при открытии панели и при появлении новых звуковых сессий;
-* обнаружение закрытия приложений;
-* приложения с активным звуком — сверху, отдельно «запущены, но молчат» и «сохранённые правила»;
-* несколько процессов одного приложения (Chrome, игры, Electron) объединяются в одну строку —
-  но только когда принадлежность определяется надёжно (по пути к исполняемому файлу);
-* состояния каждой строки: *передаётся*, *исключено*, *сейчас не воспроизводит звук*,
-  *приложение закрыто*, *не удалось захватить звук*, *недоступно*;
-* приложения, звук которых перехватить невозможно, не выдаются за фильтруемые — они помечены.
+### Entry points (all of them show the same state)
 
-### Идентификация приложений
+1. **Settings → Plugins → StreamAudioFilter** — the full panel: mode, application list, switches,
+   capture state, errors, diagnostics.
+2. **A button next to the microphone/headphones** at the bottom of the Discord window — a compact list
+   in a popover (can be switched off in the plugin settings).
+3. **The floating panel** — a small window that appears by itself when Discord requests the screen share
+   audio: handy for changing the composition on the fly without opening anything. It collapses during a
+   share so that it stays out of the way (configurable).
+4. **Vencord Toolbox** — while the plugin is enabled, the Toolbox menu gains two actions (show the
+   panel, reset the filters).
 
-Настройки привязаны к **пути исполняемого файла** (плюс читаемое имя из ресурсов версии), а не к
-идентификатору процесса: PID меняется при каждом запуске и может быть переиспользован. Приложения
-с одинаковыми названиями не объединяются. Для UWP-приложений, где путь недоступен, используется
-идентификатор пакета; если и его нет, правило помечается как «не сохраняется» и честно теряется
-после выхода приложения.
+Why there is no button inside the screen share launch window and inside the running share UI: those
+screens have no public API, and patching them blindly means breaking the user's screen share with every
+Discord update. Instead, the control panel comes to the user by itself at the moment Discord takes the
+audio for the share. More: [docs/UI.md](docs/UI.md).
+
+### Application list
+
+* scanned automatically when the panel opens and when new audio sessions appear;
+* applications closing are detected;
+* applications with active audio first, then separate sections for "running, but silent" and "saved
+  rules";
+* several processes of one application (Chrome, games, Electron) are merged into one row — but only
+  when the affiliation is reliable (by the path of the executable);
+* an application started **twice** (two independent process trees) is still one row and one stream:
+  both instances are captured, summed once, and the row gains a "2 instances" note. A new instance
+  started during a share becomes audible by itself, without restarting the demonstration;
+* the state of every row: *sent*, *excluded*, *not playing audio right now*, *application closed*,
+  *audio capture failed*, *unavailable*;
+* applications whose audio cannot be intercepted are not presented as filterable — they are marked.
+
+### Application identity
+
+The settings are tied to the **path of the executable** (plus the readable name from the version
+resources), not to a process id: a PID changes on every start and can be reused. Applications with the
+same name are never merged. For UWP applications, where the path is unavailable, the package identity
+is used; if even that is missing, the rule is marked as "not saved" and is honestly lost once the
+application exits.
 
 ---
 
-## 3. Установка
+## 3. Installation
 
-Коротко:
+In short:
 
 ```
-1. Скопировать папку плагина в  <Vencord>\src\userplugins\StreamAudioFilter
-2. Собрать нативный модуль:    powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1
-3. Положить streamaudiofilter.node в  %APPDATA%\Vencord\streamAudioFilter\native\
-4. Пересобрать Vencord (pnpm build) и включить плагин
+1. Copy the plugin folder to   <Vencord>\src\userplugins\StreamAudioFilter
+2. Build the native addon:     powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1
+3. Put streamaudiofilter.node into  %APPDATA%\Vencord\streamAudioFilter\native\
+4. Rebuild Vencord (pnpm build) and enable the plugin
 ```
 
-Подробная инструкция с проверкой на каждом шаге: [docs/INSTALL.md](docs/INSTALL.md).
+A prebuilt Windows x64 addon is attached to the GitHub releases; it is built by the same CI that runs
+the tests, and the release shows its SHA-256. Step by step instructions with a check after every step:
+[docs/INSTALL.md](docs/INSTALL.md).
 
 ---
 
-## 4. Что плагин сознательно не делает
+## 4. What the plugin deliberately does not do
 
-| Ограничение из задачи | Как выполнено |
+| Requirement | How it is met |
 |---|---|
-| Никаких виртуальных аудиоустройств | звук вообще не проходит через устройства: микшер отдаёт PCM прямо в поток демонстрации |
-| Никакого VB-Cable / Voicemeeter / VAC | не используются и не устанавливаются |
-| Никакой переадресации звука приложений | приложения продолжают играть в свои устройства как обычно; захват идёт «сбоку» (loopback) |
-| Никаких изменений системного звука | системные настройки не читаются и не меняются |
-| Никаких изменений устройств Discord | устройства записи/воспроизведения не выбираются и не меняются |
-| Не трогать микрофон и голосовой канал | в цепочку микрофона плагин не вмешивается; сам Discord по умолчанию исключён из трансляции, чтобы голосовой канал не возвращался собеседникам |
-| Не требовать прав администратора | используются `PROCESS_QUERY_LIMITED_INFORMATION` и пользовательские COM-интерфейсы |
-| Не скачивать сторонние EXE | сборка идёт из исходников на вашей машине; скрипт сборки спрашивает подтверждение и печатает выполняемую команду |
-| Не ломать настройки трансляции | если в Discord выключено «Передавать звук», плагин его не включает; видео, разрешение, FPS, кодек и битрейт не изменяются |
+| No virtual audio devices | the audio never passes through a device at all: the mixer hands PCM straight to the share's stream |
+| No VB-Cable / Voicemeeter / VAC | not used, not installed |
+| No redirection of application audio | applications keep playing into their own devices as usual; the capture listens from the side (loopback) |
+| No changes to the system audio | the Windows sound settings are neither read nor written |
+| No changes to Discord's devices | recording/playback devices are neither selected nor modified |
+| Never touch the microphone or the voice call | the microphone chain is left alone; Discord itself is excluded from the share by default so that the voice call does not travel back to the other side |
+| No administrator rights | only `PROCESS_QUERY_LIMITED_INFORMATION` and user mode COM interfaces are used |
+| No third party EXE downloads | everything is built from source on your machine; the build script asks for confirmation and prints the command it runs |
+| No damage to the share settings | if "Share audio" is off in Discord, the plugin does not switch it on; video, resolution, FPS, codec and bitrate are never changed |
 
 ---
 
-## 5. Состояние проекта и проверка
+## 5. Project state and verification
 
-Честно о том, что уже проверено, а что нет.
+Honestly about what has been verified and what has not.
 
-**Проверено в этой среде (Linux, без Windows и без Discord):**
+**Verified in this environment (Linux, no Windows and no Discord):**
 
-* граница JavaScript ↔ C++ (N-API): `./scripts/run-addon-tests.sh` — **5 сценариев**, в которых
-  нативный модуль собирается для текущей системы и прогоняется через свои настоящие точки входа:
-  запуск, список приложений, живые правила, выключение приложения на ходу, режим B, появление и
-  закрытие приложений, чтение PCM (не тишина, не перегруз), статистика, шлюз захвата, остановка и
-  обрезка неверных аргументов;
-* портируемое ядро DSP и движок микширования: `./scripts/run-native-tests.sh` — **103 проверки,
-  0 ошибок** (`dsp_tests` 62, `engine_tests` 41): форматы u8/s16/s24/s32/f32, даунмикс, ресемплер
-  (SNR > 70 дБ на 44.1↔48 кГц), лимитер без клиппинга при суммировании, режимы A/B, живое
-  изменение правил, закрытие приложений, предел одновременных захватов, «шлюз захвата» (в фоне
-  звук не захватывается);
-* логика правил плагина: `npx tsx tests/rules.test.ts` — **10 тестов**, включая сохранение выбора
-  при смене режима, отсутствие объединения разных приложений с одинаковым именем и устойчивость к
-  испорченному хранилищу;
-* весь TypeScript плагина проходит **настоящий тулчейн Vencord**: `tsc --noEmit` и `eslint`
-  (0 ошибок) — `./dev/typecheck.sh`.
+* the audio interception logic: `npx tsx tests/intercept.test.ts` — **13 tests**, the most important of
+  which checks that a failed filtering **removes** the audio instead of sending it unfiltered (plus the
+  microphone, the switched off filter, the explicit fallback permission and a share that never went
+  through the interceptor);
+* the JavaScript ↔ C++ boundary (N-API): `./scripts/run-addon-tests.sh` — **6 scenarios** in which the
+  native addon is compiled for the current system and driven through its real entry points: start,
+  application list, live rules, switching an application off on the fly, mode B, applications appearing
+  and closing, reading PCM (not silence, not overload), statistics, the capture gate, stopping and
+  trimming invalid arguments, and two instances of one application as a single row;
+* the portable DSP core and the mixing engine: `./scripts/run-native-tests.sh` — **127 checks, 0
+  failures** (`dsp_tests` 62, `engine_tests` 65): the u8/s16/s24/s32/f32 formats, downmixing, the
+  resampler (SNR > 70 dB at 44.1↔48 kHz), the limiter without clipping when summing, modes A and B,
+  changing rules live, applications closing, the limit of simultaneous captures, the "capture gate"
+  (nothing is captured while no share runs) and capturing several instances of one application without
+  duplicating its audio (checked with a tone detector at the frequencies of both instances);
+* the rule logic of the plugin: `npx tsx tests/rules.test.ts` — **11 tests**, including the selection
+  surviving a mode change, different applications with the same name not being merged, and a corrupted
+  store being tolerated;
+* the whole TypeScript of the plugin passes the **real Vencord toolchain**: `tsc --noEmit` and `eslint`
+  (0 errors) — `./dev/typecheck.sh`.
 
-**Собирается, но не запускается в этой среде:** нативный модуль под Windows (WASAPI process
-loopback, перечисление звуковых сессий, N-API) компилируется MSVC в CI на GitHub Actions
-(`.github/workflows/native.yml`). Лог сборки коммитится в `ci-out/`, потому что журналы Actions
-недоступны из этой сети.
+**Builds, but does not run, in this environment:** the Windows addon (WASAPI process loopback, audio
+session enumeration, N-API) is compiled by MSVC in GitHub Actions
+(`.github/workflows/native.yml`, `.github/workflows/release.yml`). The build log is committed into
+`ci-out/`, because the Actions logs are not reachable from this network.
 
-**Требует вашей машины:** звук. Ни один тест здесь не может подтвердить, что Discord отдаёт звук
-демонстрации именно через тот вызов, который перехватывает плагин, и что микшер звучит правильно
-на конкретной звуковой карте. Для этого написан пошаговый приёмочный чек-лист:
-[docs/TESTPLAN.md](docs/TESTPLAN.md). Плагин специально **показывает**, сработал ли перехват: если
-трансляция идёт, а фильтрация не применилась, это видно в панели и в диагностике, а не скрыто.
+**Needs your machine:** the audio itself. No test here can prove that Discord hands the screen share
+audio through the very call the plugin intercepts, or that the mixer sounds right on a particular sound
+card. For that there is a step by step acceptance checklist: [docs/TESTPLAN.md](docs/TESTPLAN.md). The
+plugin deliberately **shows** whether the interception worked: if a share is running while the filtering
+was not applied, the panel and the diagnostics say so instead of hiding it.
 
 ---
 
-## 6. Структура репозитория
+## 6. Repository layout
 
 ```
-index.tsx              точка входа плагина: настройки, патчи, flux, запуск/остановка
-settings.ts            настройки плагина для Vencord
-types.ts               общие типы рендерера и main-процесса (без импортов)
-native.ts              main-процесс: загрузка нативного модуля, IPC, значки приложений
-nativeBridge.ts        типизированный доступ рендерера к main-процессу
-dataStore.ts           сохранение правил в Vencord DataStore
-apps/rules.ts          чистая логика режимов, правил и списка приложений (+ тесты)
-apps/store.ts          состояние рендерера: окружение, правила, список, статус трансляции
-audio/sourceTrack.ts   превращение PCM в MediaStreamTrack через Web Audio
-stream/intercept.ts    подмена звуковой дорожки демонстрации экрана
-ui/                    панели: настройки, поповер у микрофона, плавающее окно
-components/            строка приложения, блок диагностики
-native/                C++: DSP, движок, mock-бэкенд, WASAPI-бэкенд, N-API-аддон
-scripts/               сборка нативного модуля, запуск портируемых тестов
-dev/typecheck.sh       проверка типами и линтером в реальном Vencord
-tests/                 тесты логики правил
-docs/                  архитектура, ограничения, установка, чек-лист проверки
+index.tsx              plugin entry point: settings, patches, flux, start/stop
+settings.ts            the plugin's settings for Vencord
+types.ts               shared types of the renderer and the main process (no imports)
+native.ts              main process: loading the native addon, IPC, application icons
+nativeBridge.ts        typed access of the renderer to the main process
+dataStore.ts           storing the rules in the Vencord DataStore
+apps/rules.ts          pure logic of modes, rules and the application list (+ tests)
+apps/store.ts          renderer state: environment, rules, list, share status
+audio/sourceTrack.ts   turning PCM into a MediaStreamTrack through Web Audio
+stream/intercept.ts    replacing the audio track of a screen share, failing closed
+ui/                    panels: settings, microphone popover, floating window
+components/            the application row, the diagnostics block
+native/                C++: DSP, engine, mock backend, WASAPI backend, N-API addon
+                       capture_group.* — one capture per process tree of an application
+scripts/               building the native addon, running the portable tests
+dev/typecheck.sh       type and lint check inside a real Vencord
+tests/                 tests of the rules, of the interception and of the JS ↔ C++ boundary
+docs/                  architecture, limitations, installation, test plan
 ```
 
 ---
 
-## 7. Лицензия и происхождение кода
+## 7. Licence and origin of the code
 
-GPL-3.0-or-later (см. [LICENSE](LICENSE)). Код написан для этой задачи; сторонние плагины
-изучались только как источник сведений об интерфейсах Vencord и Discord, их код не копировался.
-Единственное исключение — заголовок файлов, который требует линтер Vencord
-(`simple-header/header`, шаблон `scripts/header-new.txt`), поэтому он присутствует дословно, как и
-во всех плагинах Vencord.
+GPL-3.0-or-later (see [LICENSE](LICENSE)). The code was written for this task; other plugins were only
+studied as a source of knowledge about the Vencord and Discord interfaces, their code was not copied.
+The only exception is the file header that the Vencord linter requires (`simple-header/header`, template
+`scripts/header-new.txt`), which is therefore present verbatim, exactly as in every Vencord plugin.

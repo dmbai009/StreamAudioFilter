@@ -43,7 +43,7 @@ export function Diagnostics(props: {
     const { environment, stats, stream } = props;
 
     async function runProbe() {
-        setProbeResult("проверка…");
+        setProbeResult("checking…");
         const result = await Native.probeSupport();
         setProbeResult([
             result.reason,
@@ -55,30 +55,40 @@ export function Diagnostics(props: {
     return (
         <div className={cl("diagnostics")}>
             <button className={cl("diagnostics-toggle")} onClick={() => setOpen(!open)}>
-                <Span size="sm" weight="medium">{open ? "Скрыть диагностику" : "Диагностика и подробности"}</Span>
+                <Span size="sm" weight="medium">{open ? "Hide diagnostics" : "Diagnostics and details"}</Span>
             </button>
 
             {open && (
                 <div className={cl("diagnostics-body")}>
-                    <Row label="Платформа" value={environment?.support.os ?? "неизвестно"} />
-                    <Row label="Захват звука" value={stats?.captureBackend ?? "движок не запущен"} />
-                    <Row label="Список приложений" value={stats?.backend ?? "движок не запущен"} />
-                    <Row label="Формат вывода" value={stats ? `${stats.sampleRate} Гц, ${stats.channels} кан.` : "—"} />
-                    <Row label="Нативный модуль" value={environment?.addon.loaded ? `${environment.addon.path} (v${environment.addon.version}, N-API ${environment.addon.napi})` : "не загружен"} />
-                    <Row label="Каталог для модуля" value={environment?.dataDir ?? "—"} />
+                    <Row label="Platform" value={environment?.support.os ?? "unknown"} />
+                    <Row label="Audio capture" value={stats?.captureBackend ?? "engine not running"} />
+                    <Row label="Application list" value={stats?.backend ?? "engine not running"} />
+                    <Row label="Output format" value={stats ? `${stats.sampleRate} Hz, ${stats.channels} ch.` : "—"} />
+                    <Row label="Native addon" value={environment?.addon.loaded ? `${environment.addon.path} (v${environment.addon.version}, N-API ${environment.addon.napi})` : "not loaded"} />
+                    <Row label="Addon folder" value={environment?.dataDir ?? "—"} />
 
                     {stats && <>
                         <Divider className={cl("divider")} />
-                        <Row label="Захватывается приложений" value={String(stats.activeStreams)} />
-                        <Row label="Микшировано блоков" value={String(stats.blocksMixed)} />
-                        <Row label="Простой захватов" value={`${stats.starvedFrames} кадров`} />
-                        <Row label="Переполнение буфера" value={`${stats.outputDroppedFrames} кадров`} />
-                        <Row label="Ограничитель" value={`${stats.limitedBlocks} блоков`} />
-                        <Row label="Защита от перегрузки" value={`${stats.clampedSamples} сэмплов`} />
+                        <Row label="Applications captured" value={String(stats.activeStreams)} />
+                        <Row label="Blocks mixed" value={String(stats.blocksMixed)} />
+                        <Row label="Starved captures" value={`${stats.starvedFrames} frames`} />
+                        <Row label="Buffer overruns" value={`${stats.outputDroppedFrames} frames`} />
+                        <Row label="Limiter" value={`${stats.limitedBlocks} blocks`} />
+                        <Row label="Overload protection" value={`${stats.clampedSamples} samples`} />
                     </>}
 
-                    <Row label="Состояние трансляции" value={stream.active ? (stream.filtering ? "фильтрация активна" : "фильтрация не применена") : "нет трансляции"} />
-                    {stream.active && <Row label="Пропуски звука" value={`${stream.underruns}`} />}
+                    <Row label="Share state" value={stream.active ? (stream.filtering ? "filtering active" : "filtering not applied") : "no share"} />
+                    <Row
+                        label="Audio at the viewers"
+                        value={
+                            stream.audio === "filtered" ? "filtered"
+                                : stream.audio === "unfiltered" ? "plain system audio (unfiltered)"
+                                    : stream.audio === "muted" ? "off (filtering could not be applied)"
+                                        : "share without audio"
+                        }
+                    />
+                    {stream.audioReason && <Row label="Reason" value={stream.audioReason} />}
+                    {stream.active && <Row label="Audio dropouts" value={`${stream.underruns}`} />}
 
                     {props.warnings.length > 0 && <>
                         <Divider className={cl("divider")} />
@@ -88,16 +98,16 @@ export function Diagnostics(props: {
                     {!environment?.addon.loaded && (
                         <div className={cl("diag-hint")}>
                             <Span size="sm">
-                                Плагин не скачивает готовые бинарные файлы. Соберите нативный модуль сами:
-                                {" "}<b>scripts/build-native.ps1</b>, затем положите результат в указанный каталог
-                                (кнопка ниже откроет его) или укажите путь в настройках плагина.
+                                The plugin does not download prebuilt binaries. Build the native addon yourself:
+                                {" "}<b>scripts/build-native.ps1</b>, then put the result into the folder below
+                                (the button opens it) or set the path in the plugin settings.
                             </Span>
                             <div className={cl("diag-actions")}>
                                 <Button size="small" variant="secondary" onClick={() => void Native.openAddonFolder()}>
-                                    Открыть каталог
+                                    Open folder
                                 </Button>
                                 <Button size="small" variant="secondary" onClick={() => void Native.confirmBuildInstructions()}>
-                                    Инструкция по сборке
+                                    Build instructions
                                 </Button>
                             </div>
                         </div>
@@ -106,7 +116,7 @@ export function Diagnostics(props: {
                     <Divider className={cl("divider")} />
                     <div className={cl("diag-actions")}>
                         <Button size="small" variant="secondary" onClick={() => void runProbe()}>
-                            Проверить поддержку
+                            Check support
                         </Button>
                     </div>
                     {probeResult && <pre className={cl("diag-pre")}>{probeResult}</pre>}

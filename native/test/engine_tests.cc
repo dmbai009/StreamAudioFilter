@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "../src/app_identity.h"
+#include "../src/capture_group.h"
 #include "../src/engine.h"
 #include "../src/mock/mock_backend.h"
 
@@ -53,6 +54,49 @@ static AppView* findApp(std::vector<AppView>& apps, const std::string& key) {
         if (app.appKey == key) return &app;
     }
     return nullptr;
+}
+
+constexpr double kPi = 3.14159265358979323846;
+
+/**
+ * Magnitude of @p frequency in an interleaved stereo buffer (Goertzel).
+ * For a sine of amplitude A it returns about A, so the result is directly
+ * comparable with the levels the mock backend produces (0.25 per instance).
+ */
+static double toneMagnitude(const std::vector<float>& interleaved, int sampleRate, double frequency) {
+    const size_t frames = interleaved.size() / 2;
+    if (frames == 0) return 0.0;
+
+    const double omega = 2.0 * kPi * frequency / sampleRate;
+    const double coefficient = 2.0 * std::cos(omega);
+    double s1 = 0.0, s2 = 0.0;
+
+    for (size_t i = 0; i < frames; i++) {
+        const double sample = (interleaved[i * 2] + interleaved[i * 2 + 1]) * 0.5;
+        const double s0 = sample + coefficient * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+
+    const double power = s1 * s1 + s2 * s2 - coefficient * s1 * s2;
+    return 2.0 * std::sqrt(std::max(0.0, power)) / static_cast<double>(frames);
+}
+
+/** Reads exactly @p frames frames, waiting for the engine to produce them. */
+static std::vector<float> readFrames(Engine& engine, size_t frames, int timeoutMs = 1500) {
+    std::vector<float> buffer(frames * 2, 0.0f);
+    size_t total = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (total < frames && std::chrono::steady_clock::now() < deadline) {
+        const size_t got = engine.readFrames(buffer.data() + total * 2, frames - total);
+        if (got == 0) {
+            std::this_thread::sleep_for(milliseconds(10));
+            continue;
+        }
+        total += got;
+    }
+    buffer.resize(total * 2);
+    return buffer;
 }
 
 /** Waits until @p predicate is true, at most @p timeoutMs milliseconds. */
@@ -139,6 +183,11 @@ static void testAppIdentity() {
 
 // -------------------------------------------------------------------- engine
 
+/**
+ * Real production wiring: one capture per process tree (the mock backend behaves
+ * like WASAPI process loopback here), wrapped by the grouping factory that
+ * aggregates the instances of one application.
+ */
 struct EngineFixture {
     mock::MockEnumerator* enumerator = nullptr;
     mock::MockCaptureFactory* factory = nullptr;
@@ -150,7 +199,8 @@ struct EngineFixture {
         enumerator = ownedEnumerator.get();
         factory = ownedFactory.get();
         engine = std::make_unique<Engine>(EngineOptions { 48000, 2, 10, 8, 200, 100, 25 },
-                                          std::move(ownedEnumerator), std::move(ownedFactory));
+                                          std::move(ownedEnumerator),
+                                          std::make_unique<GroupingCaptureFactory>(std::move(ownedFactory)));
 
         std::string error;
         if (!engine->start(error)) {
@@ -306,7 +356,7 @@ static void testStreamLimit() {
 
     const auto stats = fixture.engine->stats();
     const bool warned = std::any_of(stats.warnings.begin(), stats.warnings.end(), [](const std::string& warning) {
-        return warning.find("предел") != std::string::npos;
+        return warning.find("limit") != std::string::npos;
     });
     CHECK(warned, "user visible warning about the limit");
 }
@@ -379,6 +429,147 @@ static void testCaptureGate() {
     CHECK(fixture.engine->stats().outputFrames > 0, "output stream stays alive (no restart needed)");
 }
 
+static void testRootGrouping() {
+    section("multi instance applications: roots, splitting, no duplication");
+
+    // Exact duplicates can not cause a second capture.
+    CHECK(uniqueRoots({ 100, 100, 300, 100 }) == (std::vector<uint32_t> { 100, 300 }), "duplicate roots collapsed");
+    CHECK(uniqueRoots({ 0, 42 }) == (std::vector<uint32_t> { 42 }), "root 0 is not a process");
+
+    // One application, two unrelated instances -> two roots; a child process is
+    // covered by its parent's tree and must not become a root of its own.
+    const std::vector<ProcessNode> tree { { 100, 1 }, { 101, 100 }, { 302, 1 } };
+    (void)tree;
+    CHECK(computeCaptureRoots({ 100, 101, 302 }, tree) == (std::vector<uint32_t> { 100, 302 }),
+        "two unrelated instances are both roots, the child is not");
+
+    // The grouping factory turns that into one capture per tree and mixes them.
+    auto inner = std::make_unique<mock::MockCaptureFactory>();
+    auto* innerPtr = inner.get();
+    GroupingCaptureFactory factory(std::move(inner));
+
+    CaptureRequest request;
+    request.appKey = "exe:game";
+    request.displayName = "Game";
+    request.rootPids = { 100, 101, 302 };
+    request.sampleRate = 48000;
+    request.channels = 2;
+
+    auto grouped = factory.create(request);
+    CHECK(grouped != nullptr, "grouped capture created");
+    CHECK(innerPtr->createdSources() == 3, "one capture per root pid, got %zu", innerPtr->createdSources());
+    CHECK(factory.createdParts() == 3, "parts counted, got %zu", factory.createdParts());
+    CHECK(grouped->buffer() != nullptr, "grouped capture exposes one output buffer");
+    CHECK(grouped->formatDescription().find("3") != std::string::npos, "format description mentions the instances: %s",
+        grouped->formatDescription().c_str());
+
+    // A single root request stays a pass through: no extra capture, no extra
+    // mixing stage, so the common case costs nothing.
+    auto single = std::make_unique<mock::MockCaptureFactory>();
+    auto* singlePtr = single.get();
+    GroupingCaptureFactory singleFactory(std::move(single));
+    CaptureRequest oneRoot = request;
+    oneRoot.rootPids = { 100 };
+    auto passthrough = singleFactory.create(oneRoot);
+    CHECK(passthrough != nullptr && singlePtr->createdSources() == 1, "single root is a pass through");
+
+    CaptureRequest noRoots = request;
+    noRoots.rootPids.clear();
+    CHECK(singleFactory.create(noRoots) == nullptr, "a request without roots is refused");
+}
+
+static void testMultiInstanceEngine() {
+    section("engine: two instances of one application");
+
+    EngineFixture fixture;
+    const auto first = makeApp("exe:game", "Game", 100, 1);
+    auto second = makeApp("exe:game", "Game", 302, 1);
+
+    fixture.enumerator->setApps({ first });
+    RuleSet rules;
+    rules.active = true;
+    rules.mode = RuleSet::Mode::OnlySelected;
+    rules.overrides["exe:game"] = true;
+    fixture.engine->setRules(rules);
+
+    const double toneFirst = fixture.factory->toneForPid(100);
+    const double toneSecond = fixture.factory->toneForPid(302);
+    CHECK(std::fabs(toneFirst - toneSecond) > 1.0, "the two instances use different tones (%f / %f)", toneFirst, toneSecond);
+
+    CHECK(waitFor([&] { return fixture.engine->stats().activeStreams == 1; }), "one stream for one application");
+
+    {
+        auto apps = fixture.engine->apps();
+        auto* game = findApp(apps, "exe:game");
+        CHECK(game && game->instances == 1, "still a single instance");
+    }
+
+    // The second instance is started while the first one is already streaming.
+    fixture.enumerator->setApps({ first, second });
+
+    CHECK(waitFor([&] {
+        auto apps = fixture.engine->apps();
+        auto* game = findApp(apps, "exe:game");
+        return game && game->instances == 2 && game->captured;
+    }, 4000), "the capture follows the new instance");
+
+    // Both instances must be audible, from one stream (the engine must not mix
+    // the application twice), and neither of them twice as loud as the other.
+    CHECK(waitFor([&] {
+        const auto audio = readFrames(*fixture.engine, 9600, 500);
+        const double a = toneMagnitude(audio, 48000, toneFirst);
+        const double b = toneMagnitude(audio, 48000, toneSecond);
+        return a > 0.1 && b > 0.1;
+    }, 4000), "both instances are in the mix");
+
+    std::this_thread::sleep_for(milliseconds(200));
+    const auto audio = readFrames(*fixture.engine, 9600);
+    const double levelFirst = toneMagnitude(audio, 48000, toneFirst);
+    const double levelSecond = toneMagnitude(audio, 48000, toneSecond);
+    CHECK(levelFirst > 0.12 && levelSecond > 0.12, "both tones present (%f / %f)", levelFirst, levelSecond);
+    CHECK(std::fabs(levelFirst - levelSecond) < 0.12, "no instance is captured twice (%f vs %f)", levelFirst, levelSecond);
+    CHECK(levelFirst < 0.45 && levelSecond < 0.45, "no doubled level (%f / %f)", levelFirst, levelSecond);
+    CHECK(fixture.engine->stats().activeStreams == 1, "still exactly one stream, got %zu",
+        fixture.engine->stats().activeStreams);
+
+    // ... and back to one instance: the closed one must disappear from the
+    // capture without touching the remaining instance.
+    fixture.enumerator->setApps({ second });
+    CHECK(waitFor([&] {
+        auto apps = fixture.engine->apps();
+        auto* game = findApp(apps, "exe:game");
+        return game && game->instances == 1 && game->captured;
+    }, 4000), "the capture follows a closed instance");
+
+    CHECK(waitFor([&] {
+        const auto audio2 = readFrames(*fixture.engine, 9600, 500);
+        return toneMagnitude(audio2, 48000, toneSecond) > 0.1 && toneMagnitude(audio2, 48000, toneFirst) < 0.05;
+    }, 4000), "only the remaining instance is transmitted");
+}
+
+static void testNestedInstancesOnce() {
+    section("engine: child process is not captured as a second instance");
+
+    EngineFixture fixture;
+    // Both sessions belong to the same application, the second one is a child
+    // of the first: capturing both trees would double that application's audio.
+    fixture.enumerator->setApps({ makeApp("exe:game", "Game", 100, 1), makeApp("exe:game", "Game", 101, 100) });
+
+    RuleSet rules;
+    rules.active = true;
+    rules.mode = RuleSet::Mode::OnlySelected;
+    rules.overrides["exe:game"] = true;
+    fixture.engine->setRules(rules);
+
+    CHECK(waitFor([&] { return fixture.engine->stats().activeStreams == 1; }), "one stream");
+    CHECK(waitFor([&] {
+        auto apps = fixture.engine->apps();
+        auto* game = findApp(apps, "exe:game");
+        return game && game->captured && game->instances == 1;
+    }), "child of the same tree is covered by the parent capture");
+    CHECK(fixture.factory->createdSources() == 1, "exactly one capture created, got %zu", fixture.factory->createdSources());
+}
+
 int main() {
     std::printf("StreamAudioFilter engine tests\n\n");
     testAppIdentity();
@@ -387,6 +578,9 @@ int main() {
     testClosingApp();
     testStreamLimit();
     testMixingLevels();
+    testRootGrouping();
+    testMultiInstanceEngine();
+    testNestedInstancesOnce();
     testCaptureGate();
     std::printf("\n%d checks, %d failure(s)\n", checks, failures);
     return failures == 0 ? 0 : 1;

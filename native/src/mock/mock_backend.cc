@@ -90,8 +90,9 @@ void setAppsOnAllInstances(std::vector<MockEnumerator::App> apps) {
 
 // ------------------------------------------------------------ capture source
 
-MockCaptureSource::MockCaptureSource(std::string appKey, int sampleRate, int channels, double toneHz)
+MockCaptureSource::MockCaptureSource(std::string appKey, int sampleRate, int channels, double toneHz, uint32_t rootPid)
     : appKey_(std::move(appKey))
+    , rootPid_(rootPid)
     , sampleRate_(sampleRate)
     , channels_(channels)
     , toneHz_(toneHz)
@@ -135,17 +136,24 @@ void MockCaptureSource::threadMain() {
 }
 
 std::string MockCaptureSource::formatDescription() const {
-    return "mock " + std::to_string(sampleRate_) + " Hz / " + std::to_string(channels_) + " ch / f32";
+    const std::string tree = rootPid_ ? (" (pid " + std::to_string(rootPid_) + ")") : std::string();
+    return "mock " + std::to_string(sampleRate_) + " Hz / " + std::to_string(channels_) + " ch / f32" + tree;
 }
 
 // ----------------------------------------------------------------- factory
 
+double MockCaptureFactory::toneForPid(uint32_t pid) const {
+    // Eight semitone steps: reproducible, and far enough apart to be told
+    // apart by a tone detector. Only the ratio between the tones matters, so
+    // the base is not assumed to be audible.
+    return baseToneHz_ * std::pow(2.0, static_cast<double>(pid % 8) / 12.0);
+}
+
 std::unique_ptr<ICaptureSource> MockCaptureFactory::create(const CaptureRequest& request) {
-    const size_t index = created_++;
-    // Distinct tones per application make it obvious in tests which app is in
-    // the mix; the first application is silent-ish so both cases are covered.
-    const double tone = baseToneHz_ * std::pow(2.0, static_cast<double>(index % 8) / 12.0);
-    return std::make_unique<MockCaptureSource>(request.appKey, request.sampleRate, request.channels, tone);
+    created_++;
+    const uint32_t rootPid = request.rootPids.empty() ? 0 : request.rootPids.front();
+    return std::make_unique<MockCaptureSource>(
+        request.appKey, request.sampleRate, request.channels, toneForPid(rootPid), rootPid);
 }
 
 } // namespace mock

@@ -123,7 +123,7 @@ napi_value Start(napi_env env, napi_callback_info info) {
         {
             JsonObject object(json);
             object.boolean("ok", true);
-            object.string("info", "движок уже запущен");
+            object.string("info", "the engine is already running");
         }
         return makeString(env, json);
     }
@@ -151,7 +151,7 @@ napi_value Start(napi_env env, napi_callback_info info) {
         {
             JsonObject object(json);
             object.boolean("ok", false);
-            object.string("error", error.empty() ? "не удалось запустить аудиодвижок" : error);
+            object.string("error", error.empty() ? "could not start the audio engine" : error);
         }
         return makeString(env, json);
     }
@@ -265,6 +265,7 @@ napi_value Apps(napi_env env, napi_callback_info) {
         object.string("notCapturableReason", app.notCapturableReason);
         object.number("starvedFrames", static_cast<long long>(app.starvedFrames));
         object.string("state", app.state);
+        object.number("instances", static_cast<long long>(app.instances));
     }
     json += ']';
     return makeString(env, json);
@@ -333,7 +334,7 @@ napi_value ReadPcm(napi_env env, napi_callback_info info) {
     napi_value result = nullptr;
     const size_t bytes = frames * 2 * sizeof(float);
     if (napi_create_buffer_copy(env, bytes, buffer.data(), &data, &result) != napi_ok) {
-        return throwError(env, "не удалось выделить буфер PCM");
+        return throwError(env, "could not allocate the PCM buffer");
     }
     return result;
 }
@@ -355,9 +356,9 @@ napi_value Probe(napi_env env, napi_callback_info info) {
     if (backend == BackendKind::Mock) {
         support.supported = true;
         support.os = describePlatform();
-        support.reason = "Тестовый режим: звук генерируется сигнал-генератором.";
-        support.detail = "Тестовый режим служит только для проверки интерфейса и звукового тракта.";
-        support.checks.push_back("Сигнал-генератор вместо WASAPI");
+        support.reason = "Test mode: the audio is produced by a signal generator.";
+        support.detail = "Test mode only exercises the user interface and the audio path.";
+        support.checks.push_back("A signal generator instead of WASAPI");
     } else {
         support = probeSupport();
     }

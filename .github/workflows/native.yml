@@ -1,22 +1,71 @@
 name: Native audio core
 
 on:
+  # Reused by .github/workflows/release.yml, which only publishes what this
+  # workflow has built and tested.
+  workflow_call:
   push:
+    # Branches only: a tag is handled by the release workflow, which calls this
+    # one and then attaches the resulting addon to the release.
+    branches:
+      - "**"
     paths:
       - "native/**"
       - "scripts/**"
+      - "tests/**"
+      - "apps/**"
+      - "audio/**"
+      - "stream/**"
+      - "ui/**"
+      - "components/**"
+      - "dev/**"
+      - "*.ts"
+      - "*.tsx"
       - ".github/workflows/native.yml"
   pull_request:
   workflow_dispatch:
 
+# Every job below is a gate: a compiler error, a failing check or a missing
+# artifact fails the run. The only step that is allowed to fail is the optional
+# log publication (a fork can not push), and that step never hides a failure
+# because it runs after the build and test steps and reports their status.
 jobs:
   # Fast feedback on Linux: the portable DSP + engine tests need no Windows SDK.
   portable-tests:
+    name: Portable tests (DSP + engine + N-API)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build and run portable tests
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: DSP and engine tests (g++)
         run: ./scripts/run-native-tests.sh
+
+      - name: Build the addon and test the JS <-> C++ boundary
+        run: |
+          npm install --no-save --no-audit --no-fund --legacy-peer-deps node-api-headers
+          ./scripts/run-addon-tests.sh
+
+  # The rule engine and the stream interceptor are plain TypeScript: they run
+  # without Vencord and without Discord, which is why they are a required gate.
+  typescript-tests:
+    name: TypeScript tests (rules + fail closed interceptor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Rule engine tests
+        run: npx --yes tsx tests/rules.test.ts
+
+      - name: Stream interceptor tests
+        run: npx --yes tsx tests/intercept.test.ts
 
   # Compiles the real WASAPI backend with MSVC and produces the addon.
   #
@@ -25,6 +74,7 @@ jobs:
   # the repository is. The log is filtered down to compiler diagnostics so it
   # stays small.
   windows-build:
+    name: Windows build (MSVC) + addon artifact
     runs-on: windows-latest
     permissions:
       contents: write
@@ -37,30 +87,54 @@ jobs:
 
       - name: Build native addon (node-gyp + MSVC)
         shell: bash
-        continue-on-error: true
         run: |
+          set -uo pipefail
           mkdir -p ci-out
+
           set +e
           ( cd native && npx --yes node-gyp rebuild --verbose 2>&1 ) > ci-out/full-build.log
-          echo "node-gyp exit code: $?"
-          grep -aiE "error [A-Z]*[0-9]+|error:|fatal error|warning C[0-9]+|Error\(s\)|LNK[0-9]+" ci-out/full-build.log \
-            | sed -e 's/^ *//' | sort -u | head -400 > ci-out/addon-build.log
-          rm -f ci-out/full-build.log
-          test -f native/build/Release/streamaudiofilter.node && echo "addon built"
+          status=$?
+          set -e
 
-      - name: Portable tests compiled by cl.exe
+          echo "node-gyp exit code: $status"
+          grep -aiE "error [A-Z]*[0-9]+|error:|fatal error|warning C[0-9]+|Error\(s\)|LNK[0-9]+" ci-out/full-build.log \
+            | sed -e 's/^ *//' | sort -u | head -400 > ci-out/addon-build.log || true
+          rm -f ci-out/full-build.log
+
+          # A compiler error is a failure of this job, not a line in a log file.
+          if [ "$status" -ne 0 ]; then
+              echo "::error::node-gyp failed with exit code $status (see ci-out/addon-build.log)"
+              tail -40 ci-out/addon-build.log || true
+              exit "$status"
+          fi
+
+          test -f native/build/Release/streamaudiofilter.node
+
+      - name: Portable tests compiled and run by cl.exe
         shell: cmd
-        continue-on-error: true
         run: |
           mkdir ci-out 2>nul
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSINSTALL=%%i
           call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul
           cd native
           if not exist build\msvc mkdir build\msvc
+
           cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\dsp_tests.exe /Fo:build\msvc\ test\dsp_tests.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc > ..\ci-out\msvc-tests.log 2>&1
-          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\engine_tests.exe /Fo:build\msvc\ test\engine_tests.cc src\app_identity.cc src\engine.cc src\mock\mock_backend.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc >> ..\ci-out\msvc-tests.log 2>&1
+          if errorlevel 1 exit /b 1
+
+          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\engine_tests.exe /Fo:build\msvc\ test\engine_tests.cc src\app_identity.cc src\capture_group.cc src\engine.cc src\mock\mock_backend.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc >> ..\ci-out\msvc-tests.log 2>&1
+          if errorlevel 1 exit /b 1
+
           build\msvc\dsp_tests.exe >> ..\ci-out\msvc-tests.log 2>&1
+          if errorlevel 1 exit /b 1
+
           build\msvc\engine_tests.exe >> ..\ci-out\msvc-tests.log 2>&1
+          if errorlevel 1 exit /b 1
+
+          findstr /C:"failure(s)" ..\ci-out\msvc-tests.log
+          findstr /C:"0 failure(s)" ..\ci-out\msvc-tests.log >nul
+          if errorlevel 1 exit /b 1
+
           type ..\ci-out\msvc-tests.log
 
       - name: Check that the addon was produced
@@ -89,4 +163,5 @@ jobs:
           git config user.name "StreamAudioFilter CI"
           git add -f ci-out
           git commit -m "ci: native build output" || echo "nothing to publish"
+          # A fork can not push back; the diagnostics are still in the job log.
           git push || echo "log push failed"

@@ -49,9 +49,25 @@ function app(partial: Partial<AppInfo> & { appKey: string; }): AppInfo {
         error: partial.error ?? "",
         notCapturableReason: partial.notCapturableReason ?? "",
         starvedFrames: 0,
-        state: partial.state ?? "silent"
+        state: partial.state ?? "silent",
+        instances: partial.instances ?? 1
     };
 }
+
+test("an application started twice is one entry that says so", () => {
+    // Both instances share the app key (same executable): they must not become
+    // two entries, but the panel has to mention that two instances are summed.
+    const state = emptyState("allExcept");
+    const entries = buildAppList([
+        app({ appKey: "exe:game", displayName: "Game", instances: 2, captured: true, state: "transmitting" }),
+        app({ appKey: "exe:music", displayName: "Music", instances: 1 })
+    ], state);
+
+    assert.equal(entries.length, 2, "two applications, not three entries");
+    const game = entries.find(entry => entry.appKey === "exe:game")!;
+    assert.match(game.details, /2 instances/);
+    assert.doesNotMatch(entries.find(entry => entry.appKey === "exe:music")!.details, /instance/);
+});
 
 test("mode A transmits unknown applications, mode B does not", () => {
     const all = emptyState("allExcept");
@@ -83,22 +99,22 @@ test("an explicit choice wins over the mode and is never reset by switching mode
 
 test("rules remember the name and path of an application that is already closed", () => {
     let state = emptyState("allExcept");
-    state = setTransmit(state, app({ appKey: "exe:music", displayName: "Плеер", exePath: "C:\\Music\\player.exe" }), false);
+    state = setTransmit(state, app({ appKey: "exe:music", displayName: "Player", exePath: "C:\\Music\\player.exe" }), false);
 
     const entries = buildAppList([], state);
     assert.equal(entries.length, 1);
-    assert.equal(entries[0].title, "Плеер");
+    assert.equal(entries[0].title, "Player");
     assert.equal(entries[0].section, "closed");
     assert.equal(entries[0].transmitting, false);
-    assert.match(entries[0].subtitle, /закрыт/i);
+    assert.match(entries[0].subtitle, /closed/i);
 });
 
 test("the list separates applications with audio, silent ones and saved rules", () => {
     const state = setTransmit(emptyState("allExcept"), app({ appKey: "exe:closed" }), false);
     const live = [
-        app({ appKey: "exe:quiet", displayName: "Тихий", playing: false }),
-        app({ appKey: "exe:loud", displayName: "Громкий", peak: 0.8, captured: true, state: "transmitting" }),
-        app({ appKey: "exe:soft", displayName: "Средний", peak: 0.2 })
+        app({ appKey: "exe:quiet", displayName: "Quiet", playing: false }),
+        app({ appKey: "exe:loud", displayName: "Loud", peak: 0.8, captured: true, state: "transmitting" }),
+        app({ appKey: "exe:soft", displayName: "Medium", peak: 0.2 })
     ];
 
     const entries = buildAppList(live, state, DISCORD);
@@ -113,12 +129,12 @@ test("the list separates applications with audio, silent ones and saved rules", 
 test("applications that can not be captured are marked and never shown as transmitted", () => {
     const state = emptyState("allExcept");
     const entries = buildAppList([
-        app({ appKey: "exe:protected", capturable: false, notCapturableReason: "защищённый процесс", state: "unsupported" })
+        app({ appKey: "exe:protected", capturable: false, notCapturableReason: "a protected process", state: "unsupported" })
     ], state);
 
     assert.equal(entries[0].capturable, false);
     assert.equal(entries[0].transmitting, false);
-    assert.match(entries[0].error, /защищ/);
+    assert.match(entries[0].error, /protected/);
 });
 
 test("the payload carries the mode, every explicit decision and the capture gate", () => {

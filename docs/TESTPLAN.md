@@ -1,104 +1,137 @@
-# Проверка: что уже проверено и что нужно проверить на вашей машине
+# Verification: what is already checked and what has to be checked on your machine
 
-## 1. Автоматические тесты (выполняются без Windows и без Discord)
+## 1. Automated tests (they run without Windows and without Discord)
 
 ```bash
-./scripts/run-native-tests.sh       # C++: DSP + движок
-./scripts/run-addon-tests.sh        # N-API: весь путь JS → C++ → JS на тестовом бэкенде
-npx tsx tests/rules.test.ts         # TypeScript: логика правил
-./dev/typecheck.sh                  # tsc + eslint настоящим тулчейном Vencord
+./scripts/run-native-tests.sh       # C++: DSP + engine
+./scripts/run-addon-tests.sh        # N-API: the whole JS → C++ → JS path on the test backend
+npx tsx tests/rules.test.ts         # TypeScript: the rule logic
+npx tsx tests/intercept.test.ts     # TypeScript: the audio interception, failing closed
+./dev/typecheck.sh                  # tsc + eslint with the real Vencord toolchain (all suites at once)
 ```
 
-Проверено при последнем прогоне:
+What the last run showed:
 
-| Набор | Проверок | Что покрывает |
+| Suite | Checks | What it covers |
 |---|---|---|
-| `native/test/dsp_tests.cc` | 62 | форматы u8/s16/s24(3 байта)/s32/f32, даунмикс (центр −3 дБ, LFE отбрасывается), ресемплер 44.1↔48 и 48→96 (SNR 76.1 / 89.5 / 93.2 дБ), отсутствие щелчков (затухание 20 мс укладывается в блок), лимитер: сумма двух полномасштабных потоков ≤ 1.0 и > 0.85, единичное усиление 1.0000 ± 0.01 |
-| `native/test/engine_tests.cc` | 41 | группировка процессов по приложениям, режим A (в том числе автоматический приём новых приложений), режим B, живое выключение/включение приложения, сохранение правил при смене режима, закрытие приложения на ходу, предел одновременных захватов, непрерывность выхода при смене правил (≥4800 кадров за 150 мс), «шлюз захвата» (в покое не захватывается ничего) |
-| `tests/addon.test.mjs` | 5 сценариев | реальный нативный модуль: запуск с тестовым бэкендом, видимость списка приложений, шлюз захвата (в покое не захватывается ничего), появление звука, чтение PCM (стерео f32, не тишина, лимитер ≤ 1.0), выключение приложения на ходу без остановки потока, режим B (по умолчанию пусто, затем только разрешённое), автоматический приём нового приложения в режиме A, исчезновение закрытого приложения, статистика, остановка, обрезка неверных аргументов |
-| `tests/rules.test.ts` | 10 | режимы, приоритет явного выбора над режимом, сохранение имени/пути закрытого приложения, секции и сортировка списка, недоступные приложения, содержимое полезной нагрузки, исключение Discord по умолчанию, сброс/забывание, устойчивость к испорченному хранилищу, отсутствие объединения разных приложений с одинаковыми именами |
-| `tsc --noEmit`, `eslint` | 0 ошибок | весь TypeScript плагина компилируется и проходит линтер Vencord |
+| `native/test/dsp_tests.cc` | 62 | the u8/s16/s24 (3 byte)/s32/f32 formats, downmixing (centre at −3 dB, LFE dropped), the resampler 44.1↔48 and 48→96 (SNR 76.1 / 89.5 / 93.2 dB), the absence of clicks (a 20 ms fade fits inside a block), the limiter: two full scale streams sum to ≤ 1.0 and > 0.85, unity gain 1.0000 ± 0.01 |
+| `native/test/engine_tests.cc` | 65 | grouping processes into applications, mode A (including automatically accepting new applications), mode B, switching an application off and on live, rules surviving a mode change, an application closing on the fly, the limit of simultaneous captures, an uninterrupted output while the rules change (≥4800 frames in 150 ms), the "capture gate" (nothing is captured while idle), **several instances of one application**: splitting the request by root process, dropping duplicates, forwarding a single root without overhead, a second instance appearing during a share, an instance disappearing, a nested process not being captured twice; the presence of both instances is checked with a tone detector (Goertzel) at frequencies tied to the PIDs, including a check that neither of them is twice as loud |
+| `tests/addon.test.mjs` | 6 scenarios | the real native addon: starting with the test backend, the application list being visible, the capture gate (nothing is captured while idle), audio appearing, reading PCM (stereo f32, not silence, limiter ≤ 1.0), switching an application off on the fly without interrupting the stream, mode B (empty by default, then only what is allowed), automatically accepting a new application in mode A, a closed application disappearing, statistics, stopping, trimming invalid arguments, one entry and one stream for an application started twice (`instances: 2`) |
+| `tests/intercept.test.ts` | 13 | **failing closed**: the pure decision table `decideAudio`, the removal of the system audio when filtering is unavailable (the key check of the audit), an exception from `createTrack()` not breaking the start of a share, the unfiltered fallback only with the explicit setting and with a warning, a switched off filter touching nothing, both ways of obtaining the audio (`getDisplayMedia` and `getUserMedia`+`chromeMediaSource: desktop`), the microphone staying untouched, a video only share never getting a track, a share that did not go through the interceptor being reported as an error, the death of the filtered track being visible in the state, installing and uninstalling the interceptor being idempotent |
+| `tests/rules.test.ts` | 11 | the modes, an explicit choice beating the mode, the name and path of a closed application surviving, the sections and the sorting of the list, uncapturable applications, the content of the payload, Discord being excluded by default, resetting and forgetting, tolerance of a corrupted store, different applications with the same name not being merged, the "2 instances" note in a single row |
+| `tsc --noEmit`, `eslint` | 0 errors | the whole TypeScript of the plugin compiles and passes the Vencord linter |
 
-## 2. Что проверяется автоматически в CI
+## 2. What CI checks automatically
 
-`.github/workflows/native.yml`:
+`.github/workflows/native.yml` — every job is a gate, not a line in a log file:
 
-* `portable-tests` — те же C++-тесты на Linux (быстрая обратная связь);
-* `windows-build` — сборка нативного модуля MSVC через `node-gyp` и повторная сборка/запуск
-  C++-тестов компилятором Microsoft. Лог сборки коммитится в `ci-out/` (журналы GitHub Actions
-  недоступны из сети, в которой готовился проект).
+* `portable-tests` — the C++ tests on Linux (`g++`) **and** a build of the N-API addon followed by
+  `tests/addon.test.mjs`; a failing test fails the job;
+* `typescript-tests` — `tests/rules.test.ts` and `tests/intercept.test.ts` (both mandatory);
+* `windows-build` — the native addon built by MSVC through `node-gyp` (no `continue-on-error`: a
+  compiler error fails the job), then the portable C++ tests compiled and run by the Microsoft compiler
+  with the exit code of every `.exe` and the line "0 failure(s)" checked, and finally a check that the
+  artifact `streamaudiofilter.node` really exists. The build log is committed into `ci-out/` (the GitHub
+  Actions logs are not reachable from the network this project was prepared in); the log publication
+  step is the only optional one and it cannot hide a failure, because it runs after the build and the
+  tests.
 
-## 3. Приёмочная проверка на вашей машине
+`.github/workflows/release.yml` — triggered by a `v*` tag: it calls the gate workflow above, downloads
+the addon that gate produced and attaches it to the release together with its SHA-256 and an install
+note. A tag can therefore never publish a binary that a commit build would have rejected.
 
-Каждый пункт соответствует требованиям задачи. Ожидаемый результат описан так, чтобы «работает»
-и «не работает» нельзя было перепутать.
+## 3. Acceptance run on your machine
 
-### 3.1 Подготовка
+Every item corresponds to a requirement of the original task. The expected result is written so that
+"works" and "does not work" cannot be confused.
 
-1. Установите плагин (`docs/INSTALL.md`), перезапустите Discord.
-2. Откройте панель, нажмите **«Проверить поддержку»**.
-   * Windows 11 или сборка 20348+ → ожидается «поддержка: да».
-   * Windows 10 сборки < 20348 → ожидается «поддержка: нет» с текстом про сборку 20348 и без
-     попыток что-либо обойти. Это ожидаемый (и единственно честный) результат: см. `LIMITATIONS.md`.
+### 3.1 Preparation
 
-### 3.2 Главный сценарий (демонстрация всего монитора)
+1. Install the plugin (`docs/INSTALL.md`) and restart Discord.
+2. Open the panel and press **"Check support"**.
+   * Windows 10 version 2004+ (build ≥ 19041) and Windows 11 → expect "supported: yes" ("real activation
+     of a per process capture: success") and a line with the build number saying that the real threshold
+     is 19041 while 20348 is only what the documentation states.
+   * Windows 10 before 2004 (build < 19041) → expect "supported: no" with a text about build 19041 and
+     the real `HRESULT` of the attempt, and no attempt to circumvent anything. That is the only honest
+     result: see `LIMITATIONS.md`.
+   * A wrong result would be "supported: no" on Windows 10 2004+ without an error code: it means the
+     system refused for a concrete reason (the audio service, a driver) that has to be diagnosed from
+     the `HRESULT`, not from the Windows version.
 
-3. Включите музыку (Spotify/плеер), игру и мессенджер — все со звуком.
-4. Откройте панель, нажмите «Обновить список»: все четыре приложения должны быть в разделе
-   «Сейчас воспроизводят звук» (Discord — отдельно, в исключённых).
-5. Запустите демонстрацию **всего экрана** с включённым «Передавать звук».
-6. Убедитесь, что в панели написано **«Трансляция идёт…»** — это доказательство, что перехват
-   сработал (если написано «фильтрация не применена», значит Discord пошёл другим путём — пришлите
-   раздел «Диагностика»).
-7. Выключите Spotify переключателем, **не прерывая трансляцию**.
-   * зрители: музыка пропадает в пределах ~50 мс, игра продолжает звучать;
-   * вы: музыка слышна всё это время;
-   * видео: не мигает, не перезапускается; голосовой канал не переподключается.
-8. Включите Spotify обратно — музыка возвращается так же быстро.
-9. Переключитесь в режим **«Только выбранные»**: должны остаться только явно включённые приложения.
-   Затем вернитесь в «Всё, кроме выбранного»: выключенный Spotify должен остаться выключенным
-   (правила не сбрасываются сменой режима).
-10. Запустите новое приложение со звуком (например, браузер с видео):
-    * в режиме A оно должно появиться и звучать без вашего участия;
-    * в режиме B оно должно молчать, пока вы его не включите.
-11. Закройте приложение: строка переезжает в «Сохранённые правила (приложение закрыто)», захват
-    освобождается (в диагностике уменьшается «Захватывается приложений»).
-12. Завершите демонстрацию: захваты должны остановиться (через 30 секунд движок останавливается
-    сам), панель — вернуться в состояние «Готов к работе».
+### 3.1.1 Failing closed
 
-### 3.3 Проверка ограничений из задачи
+Check it in any of these ways:
 
-| Что проверяем | Как | Ожидание |
+1. Temporarily rename `%APPDATA%\Vencord\streamAudioFilter\native\streamaudiofilter.node` (or set a
+   wrong path to the addon in the settings) and start a share of the **whole screen** with audio.
+   * Expected: the panel says in red that the filtering was not applied and that **the share audio is
+     not being sent**; the "Audio at the viewers" row of the diagnostics reads "off".
+   * The viewers must hear **neither** the excluded applications **nor** the other ones.
+2. Enable the "Send plain system audio when filtering is unavailable" setting and start the share again.
+   * Expected: the audio is back (as in Discord without the plugin) and the panel warns that it is
+     unfiltered.
+3. Switch the filtering off ("Filter the screen share audio" → off) and start a share.
+   * Expected: the panel says the filtering is off, the usual audio is sent, and the microphone, the
+     other applications and every Discord setting stay untouched.
+
+### 3.2 The main scenario (sharing the whole monitor)
+
+1. Play music (Spotify/a player), a game and a messenger — all with sound.
+2. Open the panel and press "Refresh list": all four applications must appear in the "Currently playing
+   audio" section (Discord separately, in the excluded ones).
+3. Start a share of the **whole screen** with "Share audio" enabled.
+4. Make sure the panel says **"Sharing: …"** — that is the proof that the interception worked (if it
+   says "filtering not applied", Discord took another path: send the diagnostics section).
+5. Switch Spotify off with its switch, **without interrupting the share**.
+   * viewers: the music disappears within about 50 ms, the game keeps playing;
+   * you: the music stays audible the whole time;
+   * video: no flicker, no restart; the voice call does not reconnect.
+6. Switch Spotify back on — the music returns just as quickly.
+7. Change to the **"Only included"** mode: only the applications you explicitly enabled must remain.
+   Then go back to "Everything except excluded": the switched off Spotify must stay switched off (a mode
+   change does not reset the rules).
+8. Start a new application with sound (a browser playing a video, for example):
+   * in mode A it must appear and play without any action from you;
+   * in mode B it must stay silent until you switch it on.
+9. Close the application: its row moves to "Saved rules (application closed)" and the capture is
+   released (the "Applications captured" number in the diagnostics goes down).
+10. End the share: the captures must stop (the engine stops by itself after 30 seconds) and the panel
+    must return to the "Ready" state.
+
+### 3.3 Checking the constraints of the task
+
+| What is checked | How | Expectation |
 |---|---|---|
-| Микрофон и голосовой канал не тронуты | говорите во время трансляции | собеседники слышат вас как обычно; голосовой канал Discord не попадает в трансляцию |
-| Локальный звук не меняется | выключите приложение из трансляции | вы продолжаете его слышать, громкость в системном микшере не меняется |
-| Устройства не меняются | откройте настройки звука Discord до и после | список устройств и выбранные устройства те же |
-| Системные настройки не меняются | сравните панель «Звук» Windows до/после | без изменений |
-| Виртуальных устройств не появилось | `Get-PnpDevice -Class MEDIA`, диспетчер устройств | новых устройств нет |
-| Права администратора не нужны | запустите Discord без прав администратора | всё работает (в плагине нет ни одного `runas`/UAC-манифеста) |
-| Ничего не скачивается | установка плагина и сборка | сеть используется только для `npx node-gyp` с явным подтверждением |
-| Параметры трансляции не изменены | сравните качество/разрешение до и после | настройки видео не менялись |
-| «Передавать звук» уважается | выключите его в Discord и начните трансляцию | плагин не включает звук принудительно и пишет об этом в панели |
+| The microphone and the voice call are untouched | talk while sharing | the others hear you as usual; the Discord voice call never ends up in the share |
+| The local audio is unchanged | switch an application out of the share | you keep hearing it, its volume in the Windows mixer does not change |
+| No devices are changed | open the Discord audio settings before and after | the same device list and the same selected devices |
+| No system settings are changed | compare the Windows "Sound" panel before and after | unchanged |
+| No virtual device appeared | `Get-PnpDevice -Class MEDIA`, Device Manager | no new devices |
+| No administrator rights are needed | run Discord without administrator rights | everything works (there is not a single `runas` or UAC manifest in the plugin) |
+| Nothing is downloaded | installing the plugin and building | the network is used only for `npx node-gyp`, after an explicit confirmation |
+| The share parameters are unchanged | compare the quality/resolution before and after | the video settings were not changed |
+| "Share audio" is respected | switch it off in Discord and start a share | the plugin does not force it on and says so in the panel |
 
-### 3.4 Краевые случаи
+### 3.4 Edge cases
 
-* **Несколько приложений с одинаковым названием** (два разных `chrome.exe` из разных папок) — две
-  отдельные строки, правила независимы.
-* **Много приложений со звуком** — больше лимита (по умолчанию 12): появляется предупреждение
-  «часть звука не передаётся», поток не рвётся.
-* **44.1 кГц** (устройство вывода 44.1): щелчков и ускорения/замедления нет.
-* **Voicemeeter как устройство по умолчанию**: приложения, играющие в VAIO, видны и фильтруются;
-  см. раздел про Voicemeeter в `LIMITATIONS.md`.
-* **Перезапуск Discord** — сохранённые правила восстанавливаются, PID-и не важны.
-* **Выключение и включение плагина** — захваты останавливаются, при включении список собирается заново.
+* **Several applications with the same name** (two different `chrome.exe` from different folders) — two
+  separate rows, independent rules.
+* **Many applications with audio** — more than the limit (12 by default): the warning "part of the audio
+  is not sent" appears and the stream does not break.
+* **44.1 kHz** (an output device at 44.1): no clicks, no speeding up or slowing down.
+* **Voicemeeter as the default device**: applications playing into VAIO are visible and can be filtered;
+  see the Voicemeeter section of `LIMITATIONS.md`.
+* **Restarting Discord** — the saved rules come back, PIDs do not matter.
+* **Switching the plugin off and on** — the captures stop, and the list is collected again on enable.
 
-## 4. Если что-то не работает
+## 4. If something does not work
 
-Соберите и приложите:
+Collect and attach:
 
-1. вывод раздела «Диагностика» (включая результат «Проверить поддержку»);
-2. версию Windows и сборку (`[Environment]::OSVersion.Version.Build`);
-3. версию Discord и ветку Vencord;
-4. точный шаг из этого чек-листа, на котором поведение разошлось с ожиданием.
+1. the output of the diagnostics section (including the "Check support" result);
+2. the Windows version and build (`[Environment]::OSVersion.Version.Build`);
+3. the Discord version and the Vencord branch;
+4. the exact step of this checklist where the behaviour differed from the expectation.
 
-Это позволяет отличить «не поддерживается системой» от «ошибка в плагине» за один шаг.
+That makes it possible to tell "unsupported by the system" from "a bug in the plugin" in a single step.

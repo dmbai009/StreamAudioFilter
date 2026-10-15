@@ -312,13 +312,30 @@ private:
 
 } // namespace
 
+/**
+ * Minimum build that is known to implement process loopback.
+ *
+ * Microsoft documents the API as "Windows 10 Build 20348" (Server 2022), which
+ * is the build the public contract was written against. In practice the audio
+ * engine side has been present since Windows 10 version 2004 (build 19041):
+ * that is the build OBS requires for its "Application Audio Capture" source and
+ * the build every third party process loopback implementation relies on.
+ *
+ * Because both statements can only be *verified* by asking the operating
+ * system, this file never decides by version number: it performs a real
+ * activation attempt and reports its HRESULT. The build number is context for
+ * the user, not the verdict (see docs/LIMITATIONS.md).
+ */
+constexpr uint32_t kProcessLoopbackSinceBuild = 19041;  // Windows 10, version 2004
+constexpr uint32_t kDocumentedBuild = 20348;            // Windows Server 2022 / Windows 11 SDK
+
 bool probeProcessLoopback(std::string& detail) {
     const OsVersion os = osVersion();
     detail = describePlatform() + "\n";
 
     HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!completed) {
-        detail += "не удалось создать событие синхронизации";
+        detail += "could not create the synchronisation event";
         return false;
     }
 
@@ -340,27 +357,33 @@ bool probeProcessLoopback(std::string& detail) {
 
     bool supported = false;
     if (FAILED(hr)) {
-        detail += "ActivateAudioInterfaceAsync: " + formatHresult(hr, "не удалось вызвать") + "\n";
+        detail += "ActivateAudioInterfaceAsync: " + formatHresult(hr, "the call failed") + "\n";
         if (hr == E_INVALIDARG || hr == E_NOTIMPL) {
-            detail += "Это изменение Windows 11 / Windows Server 2022: сборки Windows 10 до 20348 не поддерживают "
-                      "захват звука отдельного процесса.\n";
+            detail += "The system rejected the call: this is what a missing per process capture looks like. Windows 10 "
+                      "build 19041 (version 2004) and newer do support it, so check for Windows updates "
+                      "and the health of the audio service first.\n";
         }
     } else {
         const DWORD wait = WaitForSingleObject(completed, 5000);
         if (wait != WAIT_OBJECT_0) {
-            detail += "тайм-аут ожидания активации\n";
+            detail += "timeout while waiting for the activation\n";
         } else {
             HRESULT activateResult = E_FAIL;
             ComPtr<IUnknown> activated;
             if (FAILED(operation->GetActivateResult(&activateResult, activated.put())) || FAILED(activateResult)) {
-                detail += "GetActivateResult: " + formatHresult(FAILED(activateResult) ? activateResult : E_FAIL, "активация отклонена") + "\n";
-                if (os.build != 0 && os.build < 20348) {
-                    detail += "Сборка " + std::to_string(os.build) + " младше 20348: Windows 10 не поддерживает "
-                              "захват звука отдельного приложения.\n";
+                detail += "GetActivateResult: " + formatHresult(FAILED(activateResult) ? activateResult : E_FAIL, "the activation was refused") + "\n";
+                if (os.build != 0 && os.build < kProcessLoopbackSinceBuild) {
+                    detail += "Build " + std::to_string(os.build) + " is older than " + std::to_string(kProcessLoopbackSinceBuild)
+                              + " (Windows 10 version 2004) — that version really has no per process capture, "
+                              "in any application.\n";
+                } else if (os.build != 0) {
+                    detail += "Build " + std::to_string(os.build) + " does support per process capture "
+                              "(19041/2004 and newer is required), yet the activation was refused — the reason is the error code "
+                              "above, not the version of Windows.\n";
                 }
             } else {
                 supported = true;
-                detail += "активация клиента захвата отдельного процесса прошла успешно\n";
+                detail += "the per process capture client was activated successfully\n";
             }
         }
     }
@@ -378,7 +401,7 @@ bool probeProcessLoopback(std::string& detail) {
             HRESULT activateResult = E_FAIL;
             ComPtr<IUnknown> activated;
             if (SUCCEEDED(fallbackOperation->GetActivateResult(&activateResult, activated.put())) && SUCCEEDED(activateResult)) {
-                detail += "активация без фильтра по процессу успешна (аудиодвижок работает)\n";
+                detail += "the activation without a process filter succeeded (the audio engine works)\n";
             }
         }
         if (fallbackEvent) CloseHandle(fallbackEvent);
@@ -386,6 +409,21 @@ bool probeProcessLoopback(std::string& detail) {
 
     if (completed) CloseHandle(completed);
     return supported;
+}
+
+/** What the build number means for process loopback (context, not a verdict). */
+std::string buildCheckText(uint32_t build) {
+    if (build == 0) return "The Windows version could not be determined — only a real activation attempt gives a verdict";
+    if (build < kProcessLoopbackSinceBuild) {
+        return "Windows build " + std::to_string(build) + " (< " + std::to_string(kProcessLoopbackSinceBuild)
+            + ", Windows 10 before version 2004): there is no per process capture";
+    }
+    if (build < kDocumentedBuild) {
+        return "Windows build " + std::to_string(build) + " (Windows 10 version 2004 and newer): per process capture "
+            "works, even though the documentation names build " + std::to_string(kDocumentedBuild);
+    }
+    return "Windows build " + std::to_string(build) + " >= " + std::to_string(kDocumentedBuild)
+        + ": per process capture in the documentation and in practice";
 }
 
 SupportInfo probeSupport() {
@@ -399,19 +437,23 @@ SupportInfo probeSupport() {
     info.detail = detail;
 
     if (info.supported) {
-        info.reason = "Захват звука отдельных приложений доступен.";
-        info.checks.push_back("Windows build " + std::to_string(os.build) + " >= 20348");
-        info.checks.push_back("Отдельные устройства вывода не требуются: захват идёт за процессом");
-        info.checks.push_back("Права администратора не нужны");
+        info.reason = "Capturing the audio of individual applications is available (verified by a real activation attempt).";
+        info.checks.push_back("Real activation of a per process capture: success (HRESULT S_OK)");
+        info.checks.push_back(buildCheckText(os.build));
+        info.checks.push_back("No separate output device is needed: the capture follows the process");
+        info.checks.push_back("Administrator rights are not needed");
     } else {
-        info.reason = os.build != 0 && os.build < 20348
-            ? "Windows 10 до сборки 20348 не поддерживает захват звука отдельного процесса (Windows Audio Session API "
-              "Process Loopback). Требуется Windows 11 (или Windows Server 2022 и новее)."
-            : "Не удалось активировать захват звука отдельного процесса — подробности ниже.";
-        info.checks.push_back("Захват отдельного процесса недоступен");
-        info.checks.push_back("Захват всего системного звука доступен, но фильтровать приложения в нём нельзя");
-        info.checks.push_back("Плагин не будет подменять фильтрацию другими способами (виртуальные устройства, "
-                              "маршрутизация) — это запрещено требованиями");
+        info.reason = os.build != 0 && os.build < kProcessLoopbackSinceBuild
+            ? "Windows build " + std::to_string(os.build) + " is older than " + std::to_string(kProcessLoopbackSinceBuild)
+              + " (Windows 10 version 2004): this version has no per process audio capture, in any application. "
+              "Updating Windows to 2004 or newer enables filtering."
+            : "A per process audio capture could not be activated even though this Windows build supports it — "
+              "the exact error code is above, the version of the system is not the reason.";
+        info.checks.push_back("Real activation of a per process capture: refused (details above)");
+        info.checks.push_back(buildCheckText(os.build));
+        info.checks.push_back("Capturing all system audio is available, but applications cannot be filtered in it");
+        info.checks.push_back("The plugin will not replace filtering with other means (virtual devices, "
+                              "routing) — the requirements forbid it");
     }
     return info;
 }
