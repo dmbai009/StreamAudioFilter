@@ -1,6 +1,6 @@
 dsp_tests.cc
-test\dsp_tests.cc(285): warning C4244: 'initializing': conversion from 'size_t' to 'double', possible loss of data
-test\dsp_tests.cc(285): warning C4244: 'initializing': conversion from 'size_t' to 'const double', possible loss of data
+test\dsp_tests.cc(286): warning C4244: 'initializing': conversion from 'size_t' to 'double', possible loss of data
+test\dsp_tests.cc(286): warning C4244: 'initializing': conversion from 'size_t' to 'const double', possible loss of data
 ring_buffer.cc
 convert.cc
 resampler.cc
@@ -35,7 +35,7 @@ StreamAudioFilter native DSP tests
   SNR 44.1k->48k: 76.1 dB, 48k->44.1k: 89.5 dB, 48k->96k: 93.2 dB
 == mixer
 
-62 checks, 0 failure(s)
+86 checks, 0 failure(s)
 StreamAudioFilter engine tests
 
 == app identity / grouping
@@ -46,7 +46,7 @@ StreamAudioFilter engine tests
 == mixing output
 == multi instance applications: roots, splitting, no duplication
 == engine: two instances of one application
-  restart took 95 ms, peak levels 0.151 / 0.146
+  restart took 94 ms, peak levels 0.151 / 0.146
 == engine: child process is not captured as a second instance
 == capture gate (plugin must be quiet while nothing is shared)
 == diagnostics
