@@ -21,6 +21,8 @@ jobs:
   # Compiles the real WASAPI backend with MSVC and produces the addon.
   windows-build:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -29,28 +31,55 @@ jobs:
           node-version: 22
 
       - name: Build native addon (node-gyp + MSVC)
-        working-directory: native
-        run: npx --yes node-gyp rebuild --verbose
+        shell: bash
+        run: |
+          mkdir -p ci-out
+          ( cd native && npx --yes node-gyp rebuild --verbose 2>&1 ) | tee ci-out/addon-build-raw.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" != "0" ]; then
+            grep -iE "error|warning C[0-9]+|gyp ERR" ci-out/addon-build-raw.log | head -200 > ci-out/addon-build.log
+            echo "node-gyp failed with exit code $status" >> ci-out/addon-build.log
+            rm -f ci-out/addon-build-raw.log
+            exit 1
+          fi
+          rm -f ci-out/addon-build-raw.log
+          test -f native/build/Release/streamaudiofilter.node
+          echo "addon built: $(ls -l native/build/Release/streamaudiofilter.node)"
+
+      - name: Portable tests compiled by cl.exe
+        shell: cmd
+        run: |
+          mkdir ci-out
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSINSTALL=%%i
+          call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
+          cd native
+          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\dsp_tests.exe /Fo:build\msvc\ test\dsp_tests.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc >> ..\ci-out\msvc-tests.log 2>&1
+          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\engine_tests.exe /Fo:build\msvc\ test\engine_tests.cc src\app_identity.cc src\engine.cc src\mock\mock_backend.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc >> ..\ci-out\msvc-tests.log 2>&1
+          build\msvc\dsp_tests.exe >> ..\ci-out\msvc-tests.log 2>&1
+          build\msvc\engine_tests.exe >> ..\ci-out\msvc-tests.log 2>&1
+          type ..\ci-out\msvc-tests.log
+          findstr /C:": error" /C:"error C" /C:"FAIL" ..\ci-out\msvc-tests.log > nul && exit /b 1
+          exit /b 0
 
       - name: Upload addon
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: streamaudiofilter-node-windows-x64
           path: native/build/Release/streamaudiofilter.node
           if-no-files-found: warn
 
-      # Same tests as on Linux, but compiled by cl.exe: catches MSVC specific
-      # problems (warnings as real issues, different standard library).
-      - name: Compile and run portable tests with MSVC
-        shell: cmd
+      # The agent that maintains this repository can not reach the log host of
+      # GitHub Actions, so the useful part of the build output is committed.
+      # Uploaded artifacts and the normal UI logs remain the source of truth for
+      # humans.
+      - name: Publish build log
+        if: always()
+        shell: bash
         run: |
-          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSINSTALL=%%i
-          call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat"
-          mkdir build\msvc
-          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\dsp_tests.exe /Fo:build\msvc\ test\dsp_tests.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc
-          if errorlevel 1 exit /b 1
-          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\engine_tests.exe /Fo:build\msvc\ test\engine_tests.cc src\app_identity.cc src\engine.cc src\mock\mock_backend.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc
-          if errorlevel 1 exit /b 1
-          build\msvc\dsp_tests.exe
-          if errorlevel 1 exit /b 1
-          build\msvc\engine_tests.exe
+          mkdir -p ci-out
+          git config user.email "ci@streamaudiofilter.invalid"
+          git config user.name "StreamAudioFilter CI"
+          git add -f ci-out
+          git commit -m "ci: native build output" || echo "nothing to publish"
+          git push || echo "log push failed"
