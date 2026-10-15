@@ -4,7 +4,7 @@
 // Backends without any OS dependency.
 //
 //  1. They let the whole engine be unit tested on Linux/macOS/CI.
-//  2. They power the plugin's "тестовый режим" (signal generator) so the
+//  2. They power the plugin's "test mode" (signal generator) so the
 //     renderer side (stream injection) can be validated without WASAPI.
 
 #pragma once
@@ -45,7 +45,7 @@ public:
     std::vector<SessionInfo> enumerate() override;
     std::vector<ProcessNode> processes() override;
     bool consumeChangeFlag() override;
-    std::string describe() const override { return "mock (тестовый список приложений)"; }
+    std::string describe() const override { return "mock (test application list)"; }
 
     /** Replaces the whole scripted state. Marks a change for the engine. */
     void setApps(std::vector<App> apps);
@@ -115,7 +115,7 @@ public:
      * several instances is captured instance by instance and mixed once.
      */
     std::unique_ptr<ICaptureSource> create(const CaptureRequest& request) override;
-    std::string describe() const override { return "mock (сигнал-генератор)"; }
+    std::string describe() const override { return "mock (signal generator)"; }
 
     /** Number of captures handed out (diagnostics and tests). */
     size_t createdSources() const { return created_.load(); }

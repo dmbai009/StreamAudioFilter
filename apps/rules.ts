@@ -88,7 +88,7 @@ export function seedDefaults(state: RulesState, discordExecutable: string, now =
             ...state.rules,
             [key]: {
                 transmit: false,
-                name: "Discord (голосовой канал)",
+                name: "Discord (voice call)",
                 exePath: discordExecutable,
                 lastSeen: now
             }
@@ -139,9 +139,9 @@ export function buildAppList(live: AppInfo[], state: RulesState, discordExecutab
         const transmitting = resolveTransmit(state, app.appKey);
         const details: string[] = [];
         if (app.exeName) details.push(app.exeName);
-        if (app.instances > 1) details.push(`${app.instances} экземпляра`);
+        if (app.instances > 1) details.push(`${app.instances} instances`);
         if (app.format) details.push(app.format);
-        if (app.captured && app.latencyMs >= 0) details.push(`задержка ~${app.latencyMs} мс`);
+        if (app.captured && app.latencyMs >= 0) details.push(`latency ~${app.latencyMs} ms`);
 
         entries.push({
             appKey: app.appKey,
@@ -165,15 +165,15 @@ export function buildAppList(live: AppInfo[], state: RulesState, discordExecutab
             && rule.exePath.replace(/\//g, "\\").toLowerCase() === discordExecutable.replace(/\//g, "\\").toLowerCase();
         entries.push({
             appKey: key,
-            title: rule.name || "Приложение",
-            subtitle: "Приложение закрыто",
+            title: rule.name || "Application",
+            subtitle: "Application closed",
             section: "closed",
             transmitting: rule.transmit,
             capturable: true,
             ephemeral: false,
             state: "closed",
             peak: 0,
-            details: isDiscord ? "по умолчанию исключено, чтобы голосовой канал не попадал в трансляцию" : "",
+            details: isDiscord ? "excluded by default so that the voice call never ends up in the share" : "",
             error: "",
             exePath: rule.exePath || ""
         });
@@ -196,10 +196,10 @@ function displayNameOf(app: AppInfo): string {
 }
 
 function subtitleOf(app: AppInfo): string {
-    if (!app.capturable) return "недоступно для фильтрации";
-    if (app.error) return "ошибка захвата";
-    if (app.state === "excluded") return "исключено из трансляции";
-    if (!app.playing) return "сейчас не воспроизводит звук";
-    if (app.captured) return "передаётся зрителям";
-    return "звук не захвачен";
+    if (!app.capturable) return "cannot be filtered";
+    if (app.error) return "audio capture failed";
+    if (app.state === "excluded") return "excluded from the share";
+    if (!app.playing) return "not playing audio right now";
+    if (app.captured) return "sent to the viewers";
+    return "audio not captured";
 }

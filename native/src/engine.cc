@@ -197,8 +197,8 @@ void Engine::applyPlan() {
             }
             if (std::any_of(pending.begin(), pending.end(), [&](const Pending& p) { return p.appKey == group.appKey; })) continue;
             if (pending.size() + streams_.size() >= options_.maxStreams) {
-                const std::string warning = "Достигнут предел одновременного захвата (" + std::to_string(options_.maxStreams)
-                    + " приложений). Часть звука не передаётся.";
+                const std::string warning = "The limit of simultaneous captures has been reached (" + std::to_string(options_.maxStreams)
+                    + " applications). Part of the audio is not sent.";
                 if (std::find(warnings_.begin(), warnings_.end(), warning) == warnings_.end()) warnings_.push_back(warning);
                 break;
             }
@@ -217,7 +217,7 @@ void Engine::applyPlan() {
         std::string error;
         auto source = factory_->create(request);
         if (!source || !source->start(error)) {
-            item.error = error.empty() ? "не удалось запустить захват" : error;
+            item.error = error.empty() ? "could not start the capture" : error;
             continue;
         }
         item.source = std::move(source);

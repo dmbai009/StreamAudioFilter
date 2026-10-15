@@ -32,12 +32,12 @@ std::unique_ptr<IAppEnumerator> createEnumerator(BackendKind kind, std::string& 
     if (kind == BackendKind::Auto || kind == BackendKind::Wasapi) return win::createSessionEnumerator(error);
 #else
     if (kind == BackendKind::Wasapi) {
-        error = "WASAPI доступен только в Windows";
+        error = "WASAPI is only available on Windows";
         return nullptr;
     }
 #endif
 
-    error = "нативный захват доступен только в Windows — включён тестовый режим";
+    error = "native capture is only available on Windows — test mode is on";
     return std::make_unique<mock::MockEnumerator>();
 }
 
@@ -57,12 +57,12 @@ std::unique_ptr<ICaptureFactory> createCaptureFactory(BackendKind kind, std::str
     }
 #else
     if (kind == BackendKind::Wasapi) {
-        error = "WASAPI доступен только в Windows";
+        error = "WASAPI is only available on Windows";
         return nullptr;
     }
 #endif
 
-    error = "нативный захват доступен только в Windows — включён тестовый режим";
+    error = "native capture is only available on Windows — test mode is on";
     return std::make_unique<GroupingCaptureFactory>(std::make_unique<mock::MockCaptureFactory>());
 }
 
@@ -78,20 +78,20 @@ SupportInfo probeSupport() {
     SupportInfo info;
     info.supported = false;
     info.os = describePlatform();
-    info.reason = "Захват звука отдельных приложений работает только в Windows (нужен WASAPI Process Loopback).";
-    info.detail = "Сейчас работает тестовый режим: звук генерируется сигнал-генератором.";
-    info.checks.push_back("Платформа не Windows: WASAPI недоступен");
-    info.checks.push_back("Тестовый режим доступен всегда (нужен только для проверки интерфейса)");
+    info.reason = "Capturing the audio of individual applications only works on Windows (it needs WASAPI process loopback).";
+    info.detail = "Test mode is active: the audio is produced by a signal generator.";
+    info.checks.push_back("The platform is not Windows: WASAPI is unavailable");
+    info.checks.push_back("Test mode is always available (it only exercises the interface)");
     return info;
 }
 
 std::string describePlatform() {
 #    if defined(__APPLE__)
-    return "macOS (тестовый режим)";
+    return "macOS (test mode)";
 #    elif defined(__linux__)
-    return "Linux (тестовый режим)";
+    return "Linux (test mode)";
 #    else
-    return "не Windows (тестовый режим)";
+    return "not Windows (test mode)";
 #    endif
 }
 

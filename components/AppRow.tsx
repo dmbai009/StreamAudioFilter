@@ -37,18 +37,18 @@ function ActivityMeter({ peak, active }: { peak: number; active: boolean; }) {
 
 function StatusChip({ entry }: { entry: AppListEntry; }) {
     const state = !entry.capturable
-        ? { text: "недоступно", tone: "danger" }
+        ? { text: "unavailable", tone: "danger" }
         : entry.error
-            ? { text: "ошибка", tone: "danger" }
+            ? { text: "error", tone: "danger" }
             : entry.state === "excluded"
-                ? { text: "исключено", tone: "muted" }
+                ? { text: "excluded", tone: "muted" }
                 : entry.section === "closed"
-                    ? { text: "закрыто", tone: "muted" }
+                    ? { text: "closed", tone: "muted" }
                     : entry.transmitting && entry.state === "transmitting"
-                        ? { text: "передаётся", tone: "ok" }
+                        ? { text: "sent", tone: "ok" }
                         : entry.transmitting
-                            ? { text: "ожидание звука", tone: "warn" }
-                            : { text: "нет звука", tone: "muted" };
+                            ? { text: "waiting for audio", tone: "warn" }
+                            : { text: "no audio", tone: "muted" };
 
     return <span className={cl("chip")} data-tone={state.tone}>{state.text}</span>;
 }
@@ -65,8 +65,8 @@ export function AppRow(props: {
         <div className={cl("row-title")}>
             <span className={cl("row-name")}>{entry.title}</span>
             {entry.ephemeral && (
-                <Tooltip text="Правило для этого процесса нельзя сохранить: приложение не сообщает путь к исполняемому файлу">
-                    {props => <span className={cl("row-badge")} {...props}>не сохраняется</span>}
+                <Tooltip text="A rule for this process cannot be saved: the application does not report the path of its executable">
+                    {props => <span className={cl("row-badge")} {...props}>not saved</span>}
                 </Tooltip>
             )}
         </div>
@@ -92,7 +92,7 @@ export function AppRow(props: {
             <div className={cl("row-side")}>
                 <ActivityMeter peak={entry.peak} active={entry.section === "current" && entry.capturable} />
                 <StatusChip entry={entry} />
-                <Tooltip text={entry.transmitting ? "Зрители слышат это приложение" : "Зрители не слышат это приложение"}>
+                <Tooltip text={entry.transmitting ? "The viewers hear this application" : "The viewers do not hear this application"}>
                     {tooltipProps => (
                         <span {...tooltipProps}>
                             <Switch checked={entry.transmitting} onChange={props.onChange} disabled={!entry.capturable && entry.section !== "closed"} />

@@ -30,7 +30,7 @@
  *                                                    stays untouched
  *
  * Other invariants:
- *  * Discord's "Передавать звук" switch keeps working: when Discord does not ask
+ *  * Discord's "Share audio" switch keeps working: when Discord does not ask
  *    for audio, we never add an audio track (we only ever remove).
  *  * The video stream is passed through untouched.
  *  * Nothing changes on the microphone path.
@@ -158,7 +158,7 @@ function stripAudio(stream: MediaStream): number {
 let installedHandle: InterceptorHandle | null = null;
 
 export function installInterceptor(options: InterceptorOptions): InterceptorHandle {
-    if (installedHandle) throw new Error("StreamAudioFilter: перехват уже установлен");
+    if (installedHandle) throw new Error("StreamAudioFilter: the interceptor is already installed");
 
     const mediaDevices = navigator.mediaDevices as MediaDevicesLike;
     // The unbound originals are kept for uninstall() (a bound copy is not the
@@ -200,7 +200,7 @@ export function installInterceptor(options: InterceptorOptions): InterceptorHand
     function watchStream(stream: MediaStream) {
         const video = stream.getVideoTracks()[0];
         if (video) {
-            video.addEventListener("ended", () => cleanup("трансляция завершена", "info"), { once: true });
+            video.addEventListener("ended", () => cleanup("the share ended", "info"), { once: true });
         }
         activeStream = stream;
     }
@@ -236,7 +236,7 @@ export function installInterceptor(options: InterceptorOptions): InterceptorHand
         if (decision === "filtered" && track) {
             installTrack(stream, track);
             activeTrack = track;
-            track.addEventListener("ended", () => cleanup(`фильтрованный звук трансляции остановлен — зрители больше не слышат звук (${context})`, "error"), { once: true });
+            track.addEventListener("ended", () => cleanup(`the filtered share audio stopped — the viewers can no longer hear any audio (${context})`, "error"), { once: true });
             reportAudio("filtered", "");
             options.onSessionStart();
             return stream;
@@ -248,9 +248,9 @@ export function installInterceptor(options: InterceptorOptions): InterceptorHand
             // No capture gate open, no idle engine: the share has no audio.
             options.onSessionEnd();
             options.onProblem(
-                `${context}: ${failure}. Системный звук убран из трансляции — зрители не услышат ни исключённые, `
-                + "ни остальные приложения. Чтобы вернуть обычный звук Discord, включите в настройках плагина "
-                + "«Передавать системный звук без фильтрации». Плагин не подставляет звук молча.",
+                `${context}: ${failure}. The system audio was removed from the share — the viewers will hear `
+                + "neither the excluded applications nor any other ones. To get the usual Discord audio back, "
+                + "enable the “Send system audio without filtering” setting. Nothing is substituted silently.",
                 "error"
             );
             return stream;
@@ -263,13 +263,13 @@ export function installInterceptor(options: InterceptorOptions): InterceptorHand
                 // silently sending everything.
                 reportAudio("unfiltered", failure);
                 options.onProblem(
-                    `${context}: фильтрация недоступна (${failure}), передаётся обычный системный звук — как включено `
-                    + "в настройках («Передавать системный звук без фильтрации»). Зрители слышат все приложения.",
+                    `${context}: filtering is unavailable (${failure}), so plain system audio is sent, as `
+                    + "enabled by the “Send system audio without filtering” setting. The viewers hear every application.",
                     "warning"
                 );
             } else {
                 reportAudio("none", "");
-                options.onProblem(`${context}: фильтрация выключена в настройках плагина — звук передаётся как обычно`, "info");
+                options.onProblem(`${context}: filtering is switched off in the plugin settings — the audio is sent as usual`, "info");
             }
             return stream;
         }
@@ -289,13 +289,13 @@ export function installInterceptor(options: InterceptorOptions): InterceptorHand
         watchStream(stream);
 
         if (!wantsAudio(constraints)) {
-            // Discord's "Передавать звук" is off: we must not switch it on.
+            // Discord's "Share audio" switch is off: we must not switch it on.
             reportAudio("none", "");
-            options.onProblem("Discord не запросил звук демонстрации — передача звука выключена в интерфейсе", "info");
+            options.onProblem("Discord did not ask for the screen share audio — its “Share audio” switch is off", "info");
             return stream;
         }
 
-        return applyFilter(stream, "демонстрация экрана");
+        return applyFilter(stream, "the screen share");
     }
 
     async function wrapUserMedia(constraints?: MediaStreamConstraints) {
@@ -310,7 +310,7 @@ export function installInterceptor(options: InterceptorOptions): InterceptorHand
         if (!isDesktopAudioRequest(constraints)) return stream;
 
         watchStream(stream);
-        return applyFilter(stream, "захват системного звука");
+        return applyFilter(stream, "the system audio capture");
     }
 
     if (originalGetDisplayMedia) mediaDevices.getDisplayMedia = wrapDisplayMedia;
@@ -326,11 +326,12 @@ export function installInterceptor(options: InterceptorOptions): InterceptorHand
         const intercepted = pendingRequests > 0 || now - lastMediaRequest < MEDIA_REQUEST_WINDOW_MS;
         if (audioHandled || intercepted) return;
 
-        options.onAudioState("unfiltered", "Discord не использовал перехватываемый способ получения звука");
+        options.onAudioState("unfiltered", "Discord obtained the audio in a way the plugin cannot intercept");
         options.onProblem(
-            "Началась трансляция, но запрос звука не прошёл через плагин: Discord получил звук другим способом, и "
-            + "отфильтровать его нельзя. Отключите «Передавать звук» у этой трансляции, чтобы зрители не слышали "
-            + "исключённые приложения, и напишите о проблеме — способ получения звука нужно добавить в перехват.",
+            "A share started, but the audio was not requested through the plugin: Discord obtained it in "
+            + "another way, which cannot be filtered. Switch “Share audio” off for this share so that the "
+            + "viewers do not hear the excluded applications, and report the problem — this capture path has "
+            + "to be added to the interceptor.",
             "error"
         );
     }

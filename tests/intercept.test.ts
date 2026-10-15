@@ -103,7 +103,7 @@ function install(overrides: Partial<InterceptorOptions> = {}): { harness: Harnes
     const harness: Harness = {
         options: {
             isAvailable: () => true,
-            unavailableReason: () => "движок недоступен (тест)",
+            unavailableReason: () => "engine unavailable (test)",
             createTrack: async () => null,
             allowUnfilteredFallback: () => false,
             onSessionStart: () => { harness.sessionsStarted++; },
@@ -227,8 +227,8 @@ test("filtering wanted but impossible: the stream audio is removed, not passed t
 
         const errors = errorProblems(harness);
         assert.equal(errors.length, 1, "the failure is reported as an error");
-        assert.match(errors[0].message, /движок недоступен/, "the reason is in the message");
-        assert.match(errors[0].message, /не передаётся|убран/, "the message says that no audio is transmitted");
+        assert.match(errors[0].message, /engine unavailable/, "the reason is in the message");
+        assert.match(errors[0].message, /removed from the share/, "the message says that no audio is transmitted");
     } finally {
         handle.uninstall();
     }
@@ -238,7 +238,7 @@ test("a throwing filter mutes the share instead of breaking it", async () => {
     const stream = makeStream();
     fakeMediaDevices(async () => stream);
     const { harness, handle } = install({
-        createTrack: async () => { throw new Error("нативный модуль упал"); }
+        createTrack: async () => { throw new Error("the native addon crashed"); }
     });
 
     try {
@@ -247,7 +247,7 @@ test("a throwing filter mutes the share instead of breaking it", async () => {
         assert.equal(result, stream as unknown as FakeStream, "the share still starts (the exception never reaches Discord)");
         assert.equal(stream.audio.length, 0, "but without any audio");
         assert.equal(lastAudioState(harness), "muted");
-        assert.match(errorProblems(harness)[0].message, /нативный модуль упал/, "the engine error is reported verbatim");
+        assert.match(errorProblems(harness)[0].message, /native addon crashed/, "the engine error is reported verbatim");
     } finally {
         handle.uninstall();
     }
@@ -269,7 +269,7 @@ test("the unfiltered fallback only happens when the user enabled it, and it is a
         assert.equal(lastAudioState(harness), "unfiltered");
         const warnings = harness.problems.filter(problem => problem.kind === "warning");
         assert.equal(warnings.length, 1, "the user is warned, it is not silent");
-        assert.match(warnings[0].message, /зрители слышат все приложения|все приложения/i);
+        assert.match(warnings[0].message, /viewers hear every application|every application/i);
     } finally {
         handle.uninstall();
     }
@@ -360,7 +360,8 @@ test("a share that never went through the wrapped APIs is reported, not ignored"
         assert.equal(lastAudioState(harness), "unfiltered");
         const errors = errorProblems(harness);
         assert.equal(errors.length, 1, "a loud error is reported");
-        assert.match(errors[0].message, /другим способом|не прошёл через плагин/i);
+        assert.match(errors[0].message, /not requested through the plugin/i, "the share did not use the interceptor");
+        assert.match(errors[0].message, /cannot be filtered/i, "and it says why that matters");
     } finally {
         handle.uninstall();
     }
@@ -398,7 +399,7 @@ test("when the filtered track dies the share is reported instead of silently goi
         assert.equal(harness.sessionsEnded, 1, "the session ended");
         const errors = errorProblems(harness);
         assert.equal(errors.length, 1, "an error is reported");
-        assert.match(errors[0].message, /звук трансляции остановлен/);
+        assert.match(errors[0].message, /filtered share audio stopped/);
     } finally {
         handle.uninstall();
     }

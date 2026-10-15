@@ -126,7 +126,7 @@ function loadAddon(force = false): LoadedAddon {
         try {
             const api = require_(candidate) as AddonApi;
             if (typeof api?.readPcm !== "function" || typeof api?.start !== "function") {
-                errors.push(`${candidate}: модуль не содержит ожидаемых функций`);
+                errors.push(`${candidate}: the addon does not export the expected functions`);
                 continue;
             }
 
@@ -147,7 +147,7 @@ function loadAddon(force = false): LoadedAddon {
 
     info.error = errors.length
         ? errors.join("\n")
-        : "нативный модуль не найден — соберите его командой scripts/build-native.ps1 (см. документацию)";
+        : "the native addon was not found — build it with scripts/build-native.ps1 (see the documentation)";
 
     cached = { api: null, info };
     return cached;
@@ -163,7 +163,7 @@ export async function getEnvironment(_: unknown): Promise<NativeEnvironment> {
         try {
             support = JSON.parse(api.probe("auto")) as SupportInfo;
         } catch (error) {
-            support = unsupported(`не удалось выполнить проверку: ${(error as Error).message}`);
+            support = unsupported(`the check failed: ${(error as Error).message}`);
         }
     } else {
         support = unsupported(info.error);
@@ -199,7 +199,7 @@ export async function probeSupport(_: unknown, backend = "auto"): Promise<Suppor
     try {
         return JSON.parse(api.probe(backend)) as SupportInfo;
     } catch (error) {
-        return unsupported(`не удалось выполнить проверку: ${(error as Error).message}`);
+        return unsupported(`the check failed: ${(error as Error).message}`);
     }
 }
 
@@ -235,7 +235,7 @@ export async function startEngine(_: unknown, options: EngineStartOptions): Prom
         if (result.ok && options.backend === "mock") startMockScenario();
         return result;
     } catch (error) {
-        return { ok: false, error: `не удалось запустить аудиодвижок: ${(error as Error).message}` };
+        return { ok: false, error: `could not start the audio engine: ${(error as Error).message}` };
     }
 }
 
@@ -246,27 +246,27 @@ export async function stopEngine(_: unknown): Promise<StartResult> {
     try {
         return JSON.parse(api.stop()) as StartResult;
     } catch (error) {
-        return { ok: false, error: `не удалось остановить движок: ${(error as Error).message}` };
+        return { ok: false, error: `could not stop the engine: ${(error as Error).message}` };
     }
 }
 
 export async function setRules(_: unknown, rules: RuleSetPayload): Promise<StartResult> {
     const { api } = loadAddon();
-    if (!api) return { ok: false, error: "нативный модуль не загружен" };
+    if (!api) return { ok: false, error: "the native addon is not loaded" };
     try {
         return JSON.parse(api.setRules(rules)) as StartResult;
     } catch (error) {
-        return { ok: false, error: `не удалось применить правила: ${(error as Error).message}` };
+        return { ok: false, error: `could not apply the rules: ${(error as Error).message}` };
     }
 }
 
 /**
  * Asks the engine to re-read the application list instead of using the cached
- * one; the "Обновить список" button in the panel uses this.
+ * one; the "Refresh list" button in the panel uses this.
  */
 export async function refreshApps(_: unknown): Promise<StartResult> {
     const { api } = loadAddon();
-    if (!api) return { ok: false, error: "нативный модуль не загружен" };
+    if (!api) return { ok: false, error: "the native addon is not loaded" };
     try {
         return JSON.parse(api.refresh()) as StartResult;
     } catch (error) {
@@ -310,7 +310,7 @@ export async function readPcm(_: unknown, frames: number): Promise<Uint8Array> {
 
 export async function setMockApps(_: unknown, apps: MockApp[]): Promise<StartResult> {
     const { api } = loadAddon();
-    if (!api) return { ok: false, error: "нативный модуль не загружен" };
+    if (!api) return { ok: false, error: "the native addon is not loaded" };
     try {
         api.setMockApps(apps);
         return { ok: true };
@@ -355,9 +355,9 @@ export async function getAppIcon(_: unknown, exePath: string): Promise<string | 
 function startMockScenario(): void {
     mockActive = true;
     const scenario: MockApp[] = [
-        { appKey: "mock:game", displayName: "Тестовая игра", exePath: "C:\\Games\\Demo\\demo.exe", exeName: "demo.exe", pid: 4200, parentPid: 1, playing: true, capturable: true },
-        { appKey: "mock:music", displayName: "Тестовый плеер", exePath: "C:\\Music\\player.exe", exeName: "player.exe", pid: 4300, parentPid: 1, playing: true, capturable: true },
-        { appKey: "mock:chat", displayName: "Тестовый мессенджер", exePath: "C:\\Chat\\chat.exe", exeName: "chat.exe", pid: 4400, parentPid: 1, playing: false, capturable: true }
+        { appKey: "mock:game", displayName: "Demo game", exePath: "C:\\Games\\Demo\\demo.exe", exeName: "demo.exe", pid: 4200, parentPid: 1, playing: true, capturable: true },
+        { appKey: "mock:music", displayName: "Demo player", exePath: "C:\\Music\\player.exe", exeName: "player.exe", pid: 4300, parentPid: 1, playing: true, capturable: true },
+        { appKey: "mock:chat", displayName: "Demo chat app", exePath: "C:\\Chat\\chat.exe", exeName: "chat.exe", pid: 4400, parentPid: 1, playing: false, capturable: true }
     ];
 
     const { api } = loadAddon();
@@ -372,7 +372,7 @@ function startMockScenario(): void {
         const apps = [...scenario];
         if (ticks === 2) {
             // A new application starts playing: mode A must pick it up live.
-            apps.push({ appKey: "mock:new", displayName: "Тестовый браузер", exePath: "C:\\Browser\\browser.exe", exeName: "browser.exe", pid: 4500, parentPid: 1, playing: true, capturable: true });
+            apps.push({ appKey: "mock:new", displayName: "Demo browser", exePath: "C:\\Browser\\browser.exe", exeName: "browser.exe", pid: 4500, parentPid: 1, playing: true, capturable: true });
         }
         if (ticks === 4) apps[1].playing = false;
         try {
@@ -395,14 +395,14 @@ function stopMockScenario(): void {
 export async function confirmAndRevealInstructions(_: unknown): Promise<boolean> {
     const { response } = await dialog.showMessageBox({
         type: "question",
-        buttons: ["Показать путь", "Отмена"],
+        buttons: ["Show the path", "Cancel"],
         defaultId: 0,
         cancelId: 1,
         title: "StreamAudioFilter",
-        message: "Сборка нативного модуля",
+        message: "Building the native addon",
         detail:
-            "Плагин поставляется только исходным кодом и ничего не скачивает из интернета.\n\n"
-            + `Соберите модуль самостоятельно: scripts/build-native.ps1, либо скопируйте готовый ${ADDON_FILE} в:\n${addonDirectory()}`
+            "The plugin is shipped as source only and downloads nothing from the internet.\n\n"
+            + `Build it yourself with scripts/build-native.ps1, or copy ${ADDON_FILE} to:\n${addonDirectory()}`
     });
 
     if (response !== 0) return false;

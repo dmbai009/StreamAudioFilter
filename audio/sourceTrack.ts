@@ -155,7 +155,7 @@ export async function createFilteredTrack(options: FilteredTrackOptions): Promis
             node.start(nextStartTime);
         } catch (error) {
             stats.droppedFrames += outputFrames;
-            options.onError?.(`не удалось запланировать блок звука: ${(error as Error).message}`);
+            options.onError?.(`could not schedule an audio block: ${(error as Error).message}`);
             return;
         }
 
@@ -196,14 +196,14 @@ export async function createFilteredTrack(options: FilteredTrackOptions): Promis
                 pullFailures = 0;
             } catch (error) {
                 pullFailures++;
-                options.onError?.(`ошибка получения звука: ${(error as Error).message}`);
+                options.onError?.(`the audio pull failed: ${(error as Error).message}`);
                 if (pullFailures > MAX_PULL_FAILURES) {
                     // The pipeline is dead. Giving up silently would leave the
                     // viewers with a track that never produces audio while the
                     // panel still shows "filtering active", so the track is
                     // ended instead: the interceptor sees it and reports that
                     // the share has no filtered audio any more.
-                    shutDown(`фильтрованный звук остановлен: ${pullFailures} ошибок получения звука подряд`);
+                    shutDown(`the filtered audio stopped: ${pullFailures} consecutive pull failures`);
                     break;
                 }
                 await new Promise(resolve => setTimeout(resolve, 50));
@@ -225,7 +225,7 @@ export async function createFilteredTrack(options: FilteredTrackOptions): Promis
     try {
         await context.resume();
     } catch (error) {
-        options.onError?.(`не удалось возобновить звуковой контекст: ${(error as Error).message}`);
+        options.onError?.(`could not resume the audio context: ${(error as Error).message}`);
     }
 
     // Keep the composition of the stream stable from Discord's point of view:

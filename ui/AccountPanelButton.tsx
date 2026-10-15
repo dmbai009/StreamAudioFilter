@@ -65,8 +65,8 @@ export const AccountPanelButton = ErrorBoundary.wrap(function AccountPanelButton
     const list = store.entries();
     const captured = list.filter(entry => entry.section === "current" && entry.transmitting).length;
     const tooltip = state.stream.active
-        ? `Звук трансляции: передаётся ${captured} прил.`
-        : "Звук трансляции: настройка приложений для демонстрации экрана";
+        ? `Stream audio: sent for ${captured} apps`
+        : "Stream audio: choose the applications a screen share sends";
 
     const PanelButton = resolvePanelButton();
 
@@ -74,7 +74,7 @@ export const AccountPanelButton = ErrorBoundary.wrap(function AccountPanelButton
         <div className={cl("popout")}>
             <FilterControls compact />
             <Span size="xs" className={cl("muted")}>
-                Полная панель и диагностика: Настройки → Плагины → StreamAudioFilter.
+                Full panel and diagnostics: Settings → Plugins → StreamAudioFilter.
             </Span>
         </div>
     );
