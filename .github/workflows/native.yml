@@ -188,7 +188,15 @@ jobs:
 
           findstr /C:"failure(s)" ..\ci-out\msvc-tests.log
           findstr /C:"0 failure(s)" ..\ci-out\msvc-tests.log >nul
-          if errorlevel 1 exit /b 1
+          if errorlevel 1 (
+              rem On pull_request events the ci-out log cannot be pushed back to a
+              rem branch (the checkout is a detached merge ref), so the failing
+              rem lines are published as annotations here — otherwise the only copy
+              rem of them is a job log that is not reachable from everywhere.
+              powershell -NoProfile -Command "$f = Select-String -Path ..\ci-out\msvc-tests.log -Pattern 'FAIL' -Context 0,1 | ForEach-Object { $_.Line.Trim() + ' >> ' + (($_.Context.PostContext -join ' ')).Trim() }; Write-Host ('::error title=portable tests (cl.exe) failed::' + ($f -join ' | '))"
+              type ..\ci-out\msvc-tests.log
+              exit /b 1
+          )
 
           type ..\ci-out\msvc-tests.log
 
