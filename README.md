@@ -116,26 +116,36 @@ application exits.
 
 ## 3. Installation
 
-On Windows, from the folder this repository was unpacked into — one command:
+On Windows you can either build Vencord with the plugin in it, or take a ready made bundle — nothing
+to compile:
 
 ```powershell
+# A: build it here (one command, keeps Vencord's own updater working)
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -DownloadAddon v0.1.0
+
+# B: no build at all, no Node.js needed (Vencord's updater is off in that bundle)
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Prebuilt v0.1.0
 ```
 
-It checks Node.js, gets the Vencord source, copies the plugin into `src\userplugins`, installs the
-dependencies, builds Vencord and verifies that the plugin really ended up in the build, places the
-native addon in `%APPDATA%\Vencord\streamAudioFilter\native\` and patches Discord with your build
-(that last step downloads the official Vencord installer CLI, and the script asks first). Afterwards:
+Route A checks Node.js, gets the Vencord source, copies the plugin into `src\userplugins`, installs
+the dependencies, builds Vencord and verifies that the plugin really ended up in that build, then
+patches Discord (that last step downloads the official Vencord installer CLI — the script asks first).
+Route B downloads a released bundle and the native addon, checks that the plugin is inside, and copies
+it to `%APPDATA%\Vencord\dist`; if Vencord is not injected into Discord yet, the official installer
+from <https://vencord.dev/download> does that once — it is the normal way to get Vencord into Discord.
+Both routes put the addon in `%APPDATA%\Vencord\streamAudioFilter\native\`. Either way, afterwards:
 start Discord, enable the plugin, press "Check support".
 
 `-Reinject` re-patches Discord after a Discord update, `-Update` refreshes Vencord and rebuilds. All
 switches, the manual steps and the troubleshooting table: [docs/INSTALL.md](docs/INSTALL.md).
 
-Why there is no "just drop the plugin file in" route: Vencord does not read plugins from a folder at
-runtime — its build bundles `src\plugins` and `src\userplugins` into the JavaScript Discord loads, so a
-user plugin can only enter through a build of Vencord. The native addon is the one part that really is
-a single file, and it is attached to the GitHub releases (built by the same CI that runs the tests,
-with its SHA-256 on the release page).
+Why the plugin file itself cannot just be dropped somewhere: Vencord does not read plugins from a
+folder at runtime — its build bundles `src\plugins` and `src\userplugins` into the JavaScript Discord
+loads, and the main-process half of a plugin is bundled into the same build. Route B is the closest
+thing to a file drop: the whole built Vencord, plugin included, goes into `%APPDATA%\Vencord\dist`,
+which is the directory the patch loads from. The native addon really is a single file in both routes
+and is attached to the GitHub releases (built by the same CI that runs the tests, with its SHA-256 on
+the release page).
 
 ---
 
