@@ -1,0 +1,92 @@
+name: Native audio core
+
+on:
+  push:
+    paths:
+      - "native/**"
+      - "scripts/**"
+      - ".github/workflows/native.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Fast feedback on Linux: the portable DSP + engine tests need no Windows SDK.
+  portable-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run portable tests
+        run: ./scripts/run-native-tests.sh
+
+  # Compiles the real WASAPI backend with MSVC and produces the addon.
+  #
+  # The build log of this job is committed into ci-out/ by the last step: GitHub
+  # Actions log downloads are not reachable from every network, while a file in
+  # the repository is. The log is filtered down to compiler diagnostics so it
+  # stays small.
+  windows-build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build native addon (node-gyp + MSVC)
+        shell: bash
+        continue-on-error: true
+        run: |
+          mkdir -p ci-out
+          set +e
+          ( cd native && npx --yes node-gyp rebuild --verbose 2>&1 ) > ci-out/full-build.log
+          echo "node-gyp exit code: $?"
+          grep -aiE "error [A-Z]*[0-9]+|error:|fatal error|warning C[0-9]+|Error\(s\)|LNK[0-9]+" ci-out/full-build.log \
+            | sed -e 's/^ *//' | sort -u | head -400 > ci-out/addon-build.log
+          rm -f ci-out/full-build.log
+          test -f native/build/Release/streamaudiofilter.node && echo "addon built"
+
+      - name: Portable tests compiled by cl.exe
+        shell: cmd
+        continue-on-error: true
+        run: |
+          mkdir ci-out 2>nul
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSINSTALL=%%i
+          call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul
+          cd native
+          if not exist build\msvc mkdir build\msvc
+          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\dsp_tests.exe /Fo:build\msvc\ test\dsp_tests.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc > ..\ci-out\msvc-tests.log 2>&1
+          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\engine_tests.exe /Fo:build\msvc\ test\engine_tests.cc src\app_identity.cc src\engine.cc src\mock\mock_backend.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc >> ..\ci-out\msvc-tests.log 2>&1
+          build\msvc\dsp_tests.exe >> ..\ci-out\msvc-tests.log 2>&1
+          build\msvc\engine_tests.exe >> ..\ci-out\msvc-tests.log 2>&1
+          type ..\ci-out\msvc-tests.log
+
+      - name: Check that the addon was produced
+        shell: bash
+        run: |
+          if [ ! -f native/build/Release/streamaudiofilter.node ]; then
+              echo "::error::the native addon was not built — see ci-out/addon-build.log"
+              exit 1
+          fi
+          ls -l native/build/Release/streamaudiofilter.node
+
+      - name: Upload addon
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamaudiofilter-node-windows-x64
+          path: native/build/Release/streamaudiofilter.node
+          if-no-files-found: warn
+
+      - name: Publish logs
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p ci-out
+          git config user.email "ci@streamaudiofilter.invalid"
+          git config user.name "StreamAudioFilter CI"
+          git add -f ci-out
+          git commit -m "ci: native build output" || echo "nothing to publish"
+          git push || echo "log push failed"
