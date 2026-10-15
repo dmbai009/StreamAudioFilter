@@ -53,6 +53,53 @@ Because the documentation and reality disagree, what decides is **not the build 
 activation attempt**: the plugin performs it and shows the result (or the `HRESULT` with an
 explanation).
 
+### 0x8000000E (`E_ILLEGAL_METHOD_CALL`) is not a version problem
+
+The plugin used to fail on Windows 10 19045 with
+
+```
+0x8000000E — Метод вызван в неожиданное время
+```
+
+`0x8000000E` is `E_ILLEGAL_METHOD_CALL`, and `ActivateAudioInterfaceAsync` is documented to return it
+when the caller hands it a completion handler that is not an **agile object** (one that implements
+`IAgileObject`, or aggregates the free threaded marshaler):
+
+> *"The `completionHandler` that is passed into `ActivateAudioInterfaceAsync` needs to implement
+> `IAgileObject` to ensure that there is no deadlock when the completionHandler is called from the MTA.
+> Otherwise, an `E_ILLEGAL_METHOD_CALL` will occur."*
+> (<https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-activateaudiointerfaceasync>)
+
+Windows calls `ActivateCompleted` from a worker thread of the multi threaded apartment, whichever
+apartment the caller is in, so the handler has to be usable from any apartment. The call fails
+**before** the audio engine looks at the process, the format or the build number — which is why this
+code must never be shown as "your Windows version does not support process loopback".
+
+That was a bug in this plugin: `native/src/win/com_ptr.h` now answers `IAgileObject` for every callback
+the plugin passes to COM (`ComCallback`), the probe below proves it on the real machine, and the failure
+is reported with its stage instead of as a single error:
+
+```
+[activation-call] ActivateAudioInterfaceAsync was refused: E_ILLEGAL_METHOD_CALL (0x8000000E)
+  what it means: ... it must never be reported as "this Windows version is unsupported".
+  the system says: Метод вызван в неожиданное время
+```
+
+The free threaded marshaler variant of the documented cure is deliberately *not* used: aggregating
+`CLSID_FreeThreadedMarshaler` makes the marshaler hold a reference to the object, and the object holds
+the marshaler — a reference cycle that would leak one callback object per activation, and one activation
+happens per captured application and per restart.
+
+Checking a specific machine without Discord: **`process-loopback-probe.exe`**
+
+The repository also ships a standalone probe (built by CI, attached to every release, documented in
+[PROBE.md](PROBE.md)). It performs the same activation with the same agile handler, prints every stage
+— COM apartment, handler agility, the activation call, the callback, `GetActivateResult`,
+`QueryInterface`, format negotiation, `Start`, the packets themselves, the teardown — and can play a
+1 kHz tone from its own process to show that PCM really arrives. It writes nothing to disk, installs
+nothing and changes no setting; it is the fastest way to tell whether a machine supports the capture
+and, when it does not, which step is responsible.
+
 Checking your own build with one command (PowerShell):
 
 ```powershell
@@ -156,7 +203,7 @@ Limitations worth knowing:
 | Limitation | Cause and what to do about it |
 |---|---|
 | Only a limited number of applications can be captured at once (12 by default, configurable up to 32) | every capture is a separate audio client; when the limit is exceeded a warning "part of the audio is not sent" appears instead of a silent loss. The limit counts **applications**: an application started twice is one capture inside which both instances are summed |
-| An application started twice (two independent process trees) | both instances are captured and summed once; the row of the application shows "2 instances". If the second instance starts during a share, the plugin raises the capture of that application again (the others are untouched), so its audio appears with a small delay |
+| An application started twice (two independent process trees) | both instances are captured and summed once; the row of the application shows "2 instances". If a second instance appears (or one closes) while a share is running, the capture of **that** application is recreated for the new process trees: the old one fades out and the new one starts empty, so that application is quiet for about **0.1 s** (measured by the engine test through the mock backend, which produces audio in real time like a real capture). The other applications, the share and the output stream keep running. Removing that gap would mean letting the old capture play until the new one has data, i.e. briefly mixing the same application twice — the engine keeps the "one instance, one capture" invariant instead of trading a silence for a doubled level |
 | Two different applications where one process tree nests inside the other (a launcher and a game, for example) | they count as separate rows, the way the user sees them; if both are sent, the audio of the nested process ends up in the mix twice. That is a property of "one row = one application", not a capture error |
 | Only applications that create an audio session can be captured | system sounds (notifications) are a separate pseudo session, "System sounds", which can be filtered as a whole |
 | Resampling 44.1↔48 kHz and the 48→96 kHz case are done inside the plugin | systems whose device format differs are not supported "as is", so the format is converted to 48 kHz f32 internally (SNR > 70 dB, see `docs/TESTPLAN.md`) |

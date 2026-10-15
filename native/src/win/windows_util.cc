@@ -16,8 +16,11 @@
 #include <tlhelp32.h>
 
 #include <cstdio>
+#include <string>
+#include <thread>
 #include <vector>
 
+#include "../hr_advice.h"
 #include "../platform.h"
 #include "com_iids.h"
 #include "com_ptr.h"
@@ -26,6 +29,33 @@
 #include "windows_backend.h"
 
 namespace saf::win {
+
+// The portable advice table (native/src/hr_advice.cc) carries its own numeric
+// HRESULT values, so that diagnostics, tests and the documentation work without
+// Windows headers. On Windows the SDK is available, so every one of those numbers
+// is cross checked here at compile time: a typo in the table cannot reach a user,
+// and the build fails instead of printing a wrong explanation.
+static_assert(hr::IllegalMethodCall == static_cast<int32_t>(E_ILLEGAL_METHOD_CALL), "E_ILLEGAL_METHOD_CALL is not 0x8000000E");
+static_assert(hr::NotImpl == static_cast<int32_t>(E_NOTIMPL), "E_NOTIMPL changed");
+static_assert(hr::NoInterface == static_cast<int32_t>(E_NOINTERFACE), "E_NOINTERFACE changed");
+static_assert(hr::Pointer == static_cast<int32_t>(E_POINTER), "E_POINTER changed");
+static_assert(hr::Fail == static_cast<int32_t>(E_FAIL), "E_FAIL changed");
+static_assert(hr::Unexpected == static_cast<int32_t>(E_UNEXPECTED), "E_UNEXPECTED changed");
+static_assert(hr::Win32InvalidParameter == static_cast<int32_t>(E_INVALIDARG), "E_INVALIDARG changed");
+static_assert(hr::Win32AccessDenied == static_cast<int32_t>(E_ACCESSDENIED), "E_ACCESSDENIED changed");
+static_assert(hr::Win32OutOfMemory == static_cast<int32_t>(E_OUTOFMEMORY), "E_OUTOFMEMORY changed");
+static_assert(hr::ComNotInitialized == static_cast<int32_t>(CO_E_NOTINITIALIZED), "CO_E_NOTINITIALIZED changed");
+static_assert(hr::RpcChangedMode == static_cast<int32_t>(RPC_E_CHANGED_MODE), "RPC_E_CHANGED_MODE changed");
+static_assert(hr::RpcWrongThread == static_cast<int32_t>(RPC_E_WRONG_THREAD), "RPC_E_WRONG_THREAD changed");
+static_assert(hr::Win32Timeout == static_cast<int32_t>(HRESULT_FROM_WIN32(ERROR_TIMEOUT)), "ERROR_TIMEOUT changed");
+static_assert(hr::AudclntNotInitialized == static_cast<int32_t>(AUDCLNT_E_NOT_INITIALIZED), "AUDCLNT_E_NOT_INITIALIZED changed");
+static_assert(hr::AudclntWrongEndpointType == static_cast<int32_t>(AUDCLNT_E_WRONG_ENDPOINT_TYPE), "AUDCLNT_E_WRONG_ENDPOINT_TYPE changed");
+static_assert(hr::AudclntDeviceInvalidated == static_cast<int32_t>(AUDCLNT_E_DEVICE_INVALIDATED), "AUDCLNT_E_DEVICE_INVALIDATED changed");
+static_assert(hr::AudclntUnsupportedFormat == static_cast<int32_t>(AUDCLNT_E_UNSUPPORTED_FORMAT), "AUDCLNT_E_UNSUPPORTED_FORMAT changed");
+static_assert(hr::AudclntServiceNotRunning == static_cast<int32_t>(AUDCLNT_E_SERVICE_NOT_RUNNING), "AUDCLNT_E_SERVICE_NOT_RUNNING changed");
+static_assert(hr::AudclntInvalidStreamFlag == static_cast<int32_t>(AUDCLNT_E_INVALID_STREAM_FLAG), "AUDCLNT_E_INVALID_STREAM_FLAG changed");
+static_assert(hr::AudclntEventhandleNotSet == static_cast<int32_t>(AUDCLNT_E_EVENTHANDLE_NOT_SET), "AUDCLNT_E_EVENTHANDLE_NOT_SET changed");
+static_assert(hr::AudclntResourcesInvalidated == static_cast<int32_t>(AUDCLNT_E_RESOURCES_INVALIDATED), "AUDCLNT_E_RESOURCES_INVALIDATED changed");
 
 std::string toUtf8(const std::wstring& value) {
     if (value.empty()) return {};
@@ -46,6 +76,15 @@ std::wstring toWide(const std::string& value) {
 }
 
 std::string hresultName(HRESULT hr) {
+    // The portable table knows the COM / generic codes and, more importantly,
+    // what they mean (see native/src/hr_advice.cc). The table below only adds
+    // the AUDCLNT_E_* values it does not carry, so there is exactly one place
+    // where a code gets an explanation.
+    {
+        const HresultAdvice advice = adviseHresult(static_cast<int32_t>(hr));
+        if (!advice.name.empty()) return advice.name;
+    }
+
     struct Entry {
         HRESULT code;
         const char* name;
@@ -113,10 +152,10 @@ std::string hresultName(HRESULT hr) {
     return buffer;
 }
 
-std::string hresultMessage(HRESULT hr) {
-    std::string result = hresultName(hr);
-
+/** The text the OS itself has for the code, empty when it has none. */
+std::string systemMessage(HRESULT hr) {
     wchar_t* message = nullptr;
+    std::string result;
     const DWORD length = FormatMessageW(
         FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
         nullptr, static_cast<DWORD>(hr), MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
@@ -130,8 +169,20 @@ std::string hresultMessage(HRESULT hr) {
     return result;
 }
 
+std::string hresultMessage(HRESULT hr) {
+    std::string result = hresultName(hr);
+    const std::string localized = systemMessage(hr);
+    if (!localized.empty()) result += " — " + localized;
+    return result;
+}
+
 std::string formatHresult(HRESULT hr, const std::string& operation) {
-    return operation + ": " + hresultMessage(hr);
+    const HresultAdvice advice = adviseHresult(static_cast<int32_t>(hr));
+    std::string result = operation + ": " + hresultName(hr) + " (" + hresultHex(static_cast<int32_t>(hr)) + ")";
+    if (!advice.advice.empty()) result += "\n  what it means: " + advice.advice;
+    const std::string localized = systemMessage(hr);
+    if (!localized.empty()) result += "\n  the system says: " + localized;
+    return result;
 }
 
 // ------------------------------------------------------------------- version
@@ -296,22 +347,6 @@ bool defaultMixFormat(WAVEFORMATEX** format) {
 
 namespace {
 
-/** Signals the completion event when the activation finished. */
-class ProbeActivationHandler : public ComCallback<IActivateAudioInterfaceCompletionHandler, &IID_IActivateAudioInterfaceCompletionHandler> {
-public:
-    explicit ProbeActivationHandler(HANDLE completed) : completed_(completed) {}
-
-    HRESULT STDMETHODCALLTYPE ActivateCompleted(IActivateAudioInterfaceAsyncOperation*) override {
-        SetEvent(completed_);
-        return S_OK;
-    }
-
-private:
-    HANDLE completed_;
-};
-
-} // namespace
-
 /**
  * Minimum build that is known to implement process loopback.
  *
@@ -322,23 +357,192 @@ private:
  * the build every third party process loopback implementation relies on.
  *
  * Because both statements can only be *verified* by asking the operating
- * system, this file never decides by version number: it performs a real
- * activation attempt and reports its HRESULT. The build number is context for
- * the user, not the verdict (see docs/LIMITATIONS.md).
+ * system, nothing below decides by version number: the walk performs a real
+ * activation and reports the HRESULT of the stage that failed. The build number
+ * is context for the user, never the verdict.
  */
 constexpr uint32_t kProcessLoopbackSinceBuild = 19041;  // Windows 10, version 2004
 constexpr uint32_t kDocumentedBuild = 20348;            // Windows Server 2022 / Windows 11 SDK
 
-bool probeProcessLoopback(std::string& detail) {
-    const OsVersion os = osVersion();
-    detail = describePlatform() + "\n";
+// Every step of the walk below is bounded: a diagnostics call has to return.
+constexpr DWORD kProbeActivationTimeoutMs = 5000;  // wait for ActivateCompleted
+constexpr DWORD kProbePacketTimeoutMs = 150;       // wait for a capture packet
+constexpr int kProbeListenMs = 150;                // how long packets are read
+
+/** Signals the completion event when the activation finished. */
+class ProbeActivationHandler : public ComCallback<IActivateAudioInterfaceCompletionHandler, &IID_IActivateAudioInterfaceCompletionHandler> {
+public:
+    explicit ProbeActivationHandler(HANDLE completed) : completed_(completed) {}
+
+    /**
+     * Called by COM from a worker thread of the multi threaded apartment, which
+     * is exactly the call that produces E_ILLEGAL_METHOD_CALL (0x8000000E) when
+     * the handler is not an agile object (see the comment in com_ptr.h). Nothing
+     * but an event is touched here, because the thread is not ours.
+     */
+    HRESULT STDMETHODCALLTYPE ActivateCompleted(IActivateAudioInterfaceAsyncOperation*) override {
+        SetEvent(completed_);
+        return S_OK;
+    }
+
+private:
+    HANDLE completed_;
+};
+
+/** Labelled steps, so a failure always names the stage it happened in. */
+class StageLog {
+public:
+    void note(const std::string& stage, const std::string& text) {
+        text_ += "[" + stage + "] " + text + "\n";
+    }
+
+    void failed(const std::string& stage, HRESULT hr, const std::string& what) {
+        note(stage, "FAILED — " + what);
+        note(stage, describeHresult(static_cast<int32_t>(hr)));
+    }
+
+    const std::string& text() const { return text_; }
+
+private:
+    std::string text_;
+};
+
+/** The outcome of the walk, as the UI and the documentation need it. */
+struct ProbeRun {
+    /** The whole walk succeeded: this system really provides the capture. */
+    bool supported = false;
+    /** Packets with actual samples arrived — the capture is not merely "open". */
+    bool pcmArrived = false;
+    /** The control activation without a process filter succeeded. */
+    bool engineWorks = false;
+    /** Stage by stage outcome, including the exact HRESULT of the failure. */
+    std::string stages;
+};
+
+std::string formatOf(const WAVEFORMATEX* format) {
+    if (!format) return "unknown";
+    return std::to_string(format->nSamplesPerSec) + " Hz / " + std::to_string(format->nChannels) + " channels / "
+        + std::to_string(format->wBitsPerSample) + " bit";
+}
+
+/**
+ * One ActivateAudioInterfaceAsync, with every distinct failure it can produce in
+ * a field of its own: the call, the callback, GetActivateResult, and the result
+ * the activation itself produced. Collapsing those four into "it failed" is what
+ * made the original problem invisible.
+ */
+class ActivationAttempt {
+public:
+    explicit ActivationAttempt(HANDLE completed)
+        : completed_(completed)
+        , handler_(new ProbeActivationHandler(completed)) {}
+
+    bool run(REFIID riid, PROPVARIANT* params) {
+        // Declaration order is the destruction order in reverse: the operation is
+        // released first, the handler last, because Windows holds a reference to
+        // the handler until the operation is gone.
+        call = ActivateAudioInterfaceAsync(VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, riid, params, handler_.get(), operation_.put());
+        if (FAILED(call)) return false;
+
+        if (WaitForSingleObject(completed_, kProbeActivationTimeoutMs) != WAIT_OBJECT_0) return false;
+        callbackFired = true;
+
+        resultCall = operation_->GetActivateResult(&activation, object.put());
+        return SUCCEEDED(resultCall) && SUCCEEDED(activation) && object.get() != nullptr;
+    }
+
+    /** Does the handler passed to the API answer IAgileObject? */
+    bool handlerIsAgile() const { return handler_->isAgile(); }
+
+    std::string handlerAddress() const {
+        char text[32];
+        std::snprintf(text, sizeof(text), "%p", static_cast<const void*>(handler_.get()));
+        return text;
+    }
+
+    HRESULT call = E_FAIL;           // ActivateAudioInterfaceAsync itself
+    bool callbackFired = false;      // did ActivateCompleted run?
+    HRESULT resultCall = E_FAIL;     // GetActivateResult itself
+    HRESULT activation = E_FAIL;     // the result the activation produced
+    ComPtr<IUnknown> object;         // the activated object
+
+private:
+    HANDLE completed_ = nullptr;
+    ComPtr<ProbeActivationHandler> handler_;
+    ComPtr<IActivateAudioInterfaceAsyncOperation> operation_;
+};
+
+/** The activation without a process filter: available on any Windows version. */
+bool controlActivation(StageLog& log) {
+    HANDLE event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!event) return false;
+
+    ActivationAttempt attempt(event);
+    PROPVARIANT empty = {};
+    const bool ok = attempt.run(__uuidof(IAudioClient), &empty);
+
+    if (ok) {
+        log.note("control", "the same activation without a process filter succeeded: the audio engine and the "
+                            "asynchronous activation path work");
+    } else if (FAILED(attempt.call)) {
+        log.note("control", "the activation without a process filter failed in the call itself: "
+            + hresultName(attempt.call) + " — the asynchronous activation path is broken on this system, "
+            "independently of per process capture");
+    } else if (!attempt.callbackFired) {
+        log.note("control", "the activation without a process filter timed out: no completion callback");
+    } else {
+        log.note("control", "the activation without a process filter was refused: "
+            + describeHresult(static_cast<int32_t>(SUCCEEDED(attempt.resultCall) ? attempt.activation : attempt.resultCall)));
+    }
+
+    CloseHandle(event);
+    return ok;
+}
+
+/** The whole walk, on the thread that calls it (a dedicated MTA thread). */
+ProbeRun walkProcessLoopback() {
+    ProbeRun run;
+    StageLog log;
+
+    // ---------------------------------------------------------------- stage 1
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool comOwned = SUCCEEDED(com);
+    const HRESULT comExpected = com == RPC_E_CHANGED_MODE ? S_OK : com;
+    if (com == S_OK) {
+        log.note("com", "CoInitializeEx(COINIT_MULTITHREADED) on a dedicated probe thread: S_OK");
+    } else if (com == S_FALSE) {
+        log.note("com", "CoInitializeEx(COINIT_MULTITHREADED): S_FALSE — the thread was already in a multi threaded "
+                        "apartment");
+    } else if (com == RPC_E_CHANGED_MODE) {
+        log.note("com", "CoInitializeEx(COINIT_MULTITHREADED): RPC_E_CHANGED_MODE — the thread is in a single threaded "
+                        "apartment, so COM has to marshal the completion callback. That is legal for an agile handler "
+                        "and illegal without one, which is the second way to get E_ILLEGAL_METHOD_CALL");
+    }
+
+    if (FAILED(comExpected)) {
+        log.failed("com", comExpected, "COM could not be initialised on the probe thread");
+        run.stages = log.text();
+        return run;
+    }
 
     HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!completed) {
-        detail += "could not create the synchronisation event";
-        return false;
+        log.failed("com", E_FAIL, "the synchronisation event of the probe could not be created");
+        if (comOwned) CoUninitialize();
+        run.stages = log.text();
+        return run;
     }
 
+    // ---------------------------------------------------------------- stage 2
+    ActivationAttempt attempt(completed);
+    log.note("handler", std::string("completion handler at ") + attempt.handlerAddress()
+        + " answers IAgileObject: " + (attempt.handlerIsAgile() ? "yes" : "NO"));
+    if (!attempt.handlerIsAgile()) {
+        log.note("handler", "without an agile handler Windows refuses the call below with E_ILLEGAL_METHOD_CALL "
+                            "(0x8000000E) before it looks at the process, the format or the Windows build");
+    }
+
+    // ---------------------------------------------------------------- stage 3
     AUDIOCLIENT_ACTIVATION_PARAMS params = {};
     params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
     params.ProcessLoopbackParams.TargetProcessId = GetCurrentProcessId();
@@ -349,67 +553,196 @@ bool probeProcessLoopback(std::string& detail) {
     activateParams.blob.cbSize = sizeof(params);
     activateParams.blob.pBlobData = reinterpret_cast<BYTE*>(&params);
 
-    ComPtr<IActivateAudioInterfaceAsyncOperation> operation;
-    ComPtr<ProbeActivationHandler> handler(new ProbeActivationHandler(completed));
+    log.note("params", "target process " + std::to_string(params.ProcessLoopbackParams.TargetProcessId)
+        + " (this process), mode PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, activation payload "
+        + std::to_string(sizeof(params)) + " bytes as VT_BLOB");
 
-    const HRESULT hr = ActivateAudioInterfaceAsync(
-        VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &activateParams, handler.get(), operation.put());
+    // ---------------------------------------------------------------- stage 4
+    attempt.run(__uuidof(IAudioClient), &activateParams);
 
-    bool supported = false;
-    if (FAILED(hr)) {
-        detail += "ActivateAudioInterfaceAsync: " + formatHresult(hr, "the call failed") + "\n";
-        if (hr == E_INVALIDARG || hr == E_NOTIMPL) {
-            detail += "The system rejected the call: this is what a missing per process capture looks like. Windows 10 "
-                      "build 19041 (version 2004) and newer do support it, so check for Windows updates "
-                      "and the health of the audio service first.\n";
+    if (FAILED(attempt.call)) {
+        log.failed("activation-call", attempt.call, "ActivateAudioInterfaceAsync refused the request before anything "
+                                                    "was activated");
+        if (attempt.call == hr::IllegalMethodCall && attempt.handlerIsAgile()) {
+            log.note("activation-call", "the plugin's handler *is* agile, so this is not the usual non-agile handler "
+                                        "case: the apartment of the caller is the remaining candidate (see the com "
+                                        "stage above)");
         }
+        run.engineWorks = controlActivation(log);
+        CloseHandle(completed);
+        if (comOwned) CoUninitialize();
+        run.stages = log.text();
+        return run;
+    }
+
+    log.note("activation-call", std::string("ActivateAudioInterfaceAsync accepted the request (") + hresultName(attempt.call) + ")");
+
+    // ---------------------------------------------------------------- stage 5
+    if (!attempt.callbackFired) {
+        log.note("activation-wait", "the completion callback did not fire within "
+            + std::to_string(kProbeActivationTimeoutMs) + " ms — reported as a stage of its own, not as a generic "
+            "failure");
+        run.engineWorks = controlActivation(log);
+        CloseHandle(completed);
+        if (comOwned) CoUninitialize();
+        run.stages = log.text();
+        return run;
+    }
+
+    // ---------------------------------------------------------------- stage 6
+    if (FAILED(attempt.resultCall)) {
+        log.failed("activate-result", attempt.resultCall, "GetActivateResult itself failed — the asynchronous operation "
+                                                         "never produced a result");
+    } else if (FAILED(attempt.activation)) {
+        log.failed("activate-result", attempt.activation, "the activation completed with an error (GetActivateResult "
+                                                          "itself succeeded, the result it reported is the failure)");
     } else {
-        const DWORD wait = WaitForSingleObject(completed, 5000);
-        if (wait != WAIT_OBJECT_0) {
-            detail += "timeout while waiting for the activation\n";
+        log.note("activate-result", "GetActivateResult: S_OK, activation result: S_OK");
+    }
+
+    if (FAILED(attempt.activation) || !attempt.object) {
+        run.engineWorks = controlActivation(log);
+        CloseHandle(completed);
+        if (comOwned) CoUninitialize();
+        run.stages = log.text();
+        return run;
+    }
+
+    // ---------------------------------------------------------------- stage 7
+    ComPtr<IAudioClient> client;
+    const HRESULT interfaceHr = attempt.object->QueryInterface(IID_PPV_ARGS(client.put()));
+    if (FAILED(interfaceHr) || !client) {
+        log.failed("interface", interfaceHr, "the activated object does not expose IAudioClient");
+        run.engineWorks = controlActivation(log);
+        CloseHandle(completed);
+        if (comOwned) CoUninitialize();
+        run.stages = log.text();
+        return run;
+    }
+    log.note("interface", "the activated object exposes IAudioClient (QueryInterface: S_OK)");
+
+    // ---------------------------------------------------------------- stage 8
+    // The process loopback client is not an endpoint client, so its format is
+    // negotiated: ask for 48 kHz float stereo and let the engine convert
+    // (AUTOCONVERTPCM), then fall back to the endpoint mix format.
+    const DWORD flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+
+    WAVEFORMATEXTENSIBLE preferred;
+    makeFloatFormat(preferred, 48000, 2);
+
+    HRESULT initHr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 200000, 0,
+        reinterpret_cast<WAVEFORMATEX*>(&preferred), nullptr);
+    if (SUCCEEDED(initHr)) {
+        log.note("client-init", "800000 = 20 ms buffer accepted with 48 kHz / 2 channels / 32 bit float "
+                                "(AUTOCONVERTPCM lets the engine convert)");
+    } else {
+        log.note("client-init", "48 kHz float stereo was refused: " + hresultName(initHr) + " ("
+            + hresultHex(static_cast<int32_t>(initHr)) + ") — retrying with the endpoint mix format");
+        WAVEFORMATEX* mixFormat = nullptr;
+        if (defaultMixFormat(&mixFormat) && mixFormat) {
+            initHr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 200000, 0, mixFormat, nullptr);
+            if (SUCCEEDED(initHr)) log.note("client-init", "the endpoint mix format was accepted: " + formatOf(mixFormat));
+            CoTaskMemFree(mixFormat);
         } else {
-            HRESULT activateResult = E_FAIL;
-            ComPtr<IUnknown> activated;
-            if (FAILED(operation->GetActivateResult(&activateResult, activated.put())) || FAILED(activateResult)) {
-                detail += "GetActivateResult: " + formatHresult(FAILED(activateResult) ? activateResult : E_FAIL, "the activation was refused") + "\n";
-                if (os.build != 0 && os.build < kProcessLoopbackSinceBuild) {
-                    detail += "Build " + std::to_string(os.build) + " is older than " + std::to_string(kProcessLoopbackSinceBuild)
-                              + " (Windows 10 version 2004) — that version really has no per process capture, "
-                              "in any application.\n";
-                } else if (os.build != 0) {
-                    detail += "Build " + std::to_string(os.build) + " does support per process capture "
-                              "(19041/2004 and newer is required), yet the activation was refused — the reason is the error code "
-                              "above, not the version of Windows.\n";
-                }
-            } else {
-                supported = true;
-                detail += "the per process capture client was activated successfully\n";
-            }
+            log.note("client-init", "the endpoint mix format could not be read");
         }
     }
 
-    // The same probe without a process filter: available on all Windows versions
-    // and proves that the audio engine itself is alive.
-    {
-        PROPVARIANT empty = {};
-        ComPtr<IActivateAudioInterfaceAsyncOperation> fallbackOperation;
-        HANDLE fallbackEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        ComPtr<ProbeActivationHandler> fallbackHandler(new ProbeActivationHandler(fallbackEvent));
-        const HRESULT plainHr = ActivateAudioInterfaceAsync(
-            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &empty, fallbackHandler.get(), fallbackOperation.put());
-        if (SUCCEEDED(plainHr) && WaitForSingleObject(fallbackEvent, 5000) == WAIT_OBJECT_0) {
-            HRESULT activateResult = E_FAIL;
-            ComPtr<IUnknown> activated;
-            if (SUCCEEDED(fallbackOperation->GetActivateResult(&activateResult, activated.put())) && SUCCEEDED(activateResult)) {
-                detail += "the activation without a process filter succeeded (the audio engine works)\n";
-            }
-        }
-        if (fallbackEvent) CloseHandle(fallbackEvent);
+    if (FAILED(initHr)) {
+        log.failed("client-init", initHr, "no format was accepted by the audio engine");
+        run.engineWorks = controlActivation(log);
+        CloseHandle(completed);
+        if (comOwned) CoUninitialize();
+        run.stages = log.text();
+        return run;
     }
 
-    if (completed) CloseHandle(completed);
-    return supported;
+    // ---------------------------------------------------------------- stage 9
+    ComPtr<IAudioCaptureClient> captureClient;
+    HRESULT hr = client->GetService(IID_PPV_ARGS(captureClient.put()));
+    if (FAILED(hr) || !captureClient) {
+        log.failed("capture-client", hr, "IAudioCaptureClient is not available on this client");
+        run.engineWorks = controlActivation(log);
+        CloseHandle(completed);
+        if (comOwned) CoUninitialize();
+        run.stages = log.text();
+        return run;
+    }
+
+    UINT32 bufferFrames = 0;
+    if (SUCCEEDED(client->GetBufferSize(&bufferFrames))) {
+        log.note("buffer-size", std::to_string(bufferFrames) + " frames per packet");
+    }
+
+    // --------------------------------------------------------------- stage 10
+    hr = client->SetEventHandle(completed);
+    if (SUCCEEDED(hr)) hr = client->Start();
+    if (FAILED(hr)) {
+        log.failed("capture-start", hr, "the capture stream could not be started");
+        run.engineWorks = controlActivation(log);
+        CloseHandle(completed);
+        if (comOwned) CoUninitialize();
+        run.stages = log.text();
+        return run;
+    }
+    log.note("capture-start", "SetEventHandle + Start: the stream is running");
+
+    // --------------------------------------------------------------- stage 11
+    // Read what the engine delivers for a moment. Audio is counted, never
+    // stored: nothing is written to disk anywhere in this file.
+    uint64_t frames = 0;
+    uint64_t silentFrames = 0;
+    int packets = 0;
+    const ULONGLONG deadline = GetTickCount64() + kProbeListenMs;
+    while (GetTickCount64() < deadline) {
+        WaitForSingleObject(completed, kProbePacketTimeoutMs);
+
+        UINT32 available = 0;
+        while (SUCCEEDED(captureClient->GetNextPacketSize(&available)) && available > 0) {
+            BYTE* data = nullptr;
+            UINT32 count = 0;
+            DWORD packetFlags = 0;
+            if (FAILED(captureClient->GetBuffer(&data, &count, &packetFlags, nullptr, nullptr))) break;
+            ++packets;
+            frames += count;
+            if (packetFlags & AUDCLNT_BUFFERFLAGS_SILENT) silentFrames += count;
+            captureClient->ReleaseBuffer(count);
+        }
+    }
+
+    run.pcmArrived = packets > 0 && frames > silentFrames;
+    if (packets == 0) {
+        log.note("data", "no packet arrived within " + std::to_string(kProbeListenMs) + " ms — the stream exists, the "
+                         "engine delivered nothing (silence of the captured process, or a paused source)");
+    } else {
+        log.note("data", std::to_string(packets) + " packet(s), " + std::to_string(frames) + " frames in "
+            + std::to_string(kProbeListenMs) + " ms, " + std::to_string(silentFrames) + " of them flagged silent"
+            + (run.pcmArrived ? " — samples really arrive" : " — only silence arrived so far"));
+    }
+
+    // --------------------------------------------------------------- stage 12
+    client->Stop();
+    run.supported = true;
+    log.note("teardown", "Stop + release of every interface, COM apartment closed");
+
+    run.engineWorks = controlActivation(log);
+
+    CloseHandle(completed);
+    if (comOwned) CoUninitialize();
+    run.stages = log.text();
+    return run;
 }
+
+/** Runs the walk on a thread of its own, so the caller's apartment cannot matter. */
+ProbeRun runProbeOnOwnThread() {
+    ProbeRun run;
+    std::thread worker([&run]() { run = walkProcessLoopback(); });
+    worker.join();
+    return run;
+}
+
+} // namespace
 
 /** What the build number means for process loopback (context, not a verdict). */
 std::string buildCheckText(uint32_t build) {
@@ -432,28 +765,52 @@ SupportInfo probeSupport() {
     info.os = describePlatform();
     info.build = os.build;
 
-    std::string detail;
-    info.supported = probeProcessLoopback(detail);
-    info.detail = detail;
+    // The walk runs on a thread of its own: the caller's COM apartment must not
+    // decide whether this probe can work.
+    const ProbeRun run = runProbeOnOwnThread();
+    info.detail = run.stages;
+    info.supported = run.supported;
 
-    if (info.supported) {
-        info.reason = "Capturing the audio of individual applications is available (verified by a real activation attempt).";
-        info.checks.push_back("Real activation of a per process capture: success (HRESULT S_OK)");
+    if (run.supported) {
+        info.reason = "Capturing the audio of individual applications is available on this system — verified by a real "
+                      "activation, not by a version number.";
+        info.checks.push_back("Per process capture activated: success (ActivateAudioInterfaceAsync -> S_OK, "
+                              "IAudioClient obtained)");
+        info.checks.push_back("IAudioClient.Initialize + Start: success");
+        info.checks.push_back(run.pcmArrived
+                ? "The capture delivered packets with samples during the test window"
+                : "No samples arrived during the short test window — expected when the probed process plays nothing; "
+                  "the standalone probe can be pointed at an application that does play audio");
+        info.checks.push_back(run.engineWorks
+                ? "The activation without a process filter works too: the audio engine and the asynchronous activation "
+                  "path are healthy"
+                : "The activation without a process filter did not work either — that points at the audio service or the "
+                  "activation path, not at per process capture");
         info.checks.push_back(buildCheckText(os.build));
         info.checks.push_back("No separate output device is needed: the capture follows the process");
         info.checks.push_back("Administrator rights are not needed");
-    } else {
-        info.reason = os.build != 0 && os.build < kProcessLoopbackSinceBuild
-            ? "Windows build " + std::to_string(os.build) + " is older than " + std::to_string(kProcessLoopbackSinceBuild)
-              + " (Windows 10 version 2004): this version has no per process audio capture, in any application. "
-              "Updating Windows to 2004 or newer enables filtering."
-            : "A per process audio capture could not be activated even though this Windows build supports it — "
-              "the exact error code is above, the version of the system is not the reason.";
-        info.checks.push_back("Real activation of a per process capture: refused (details above)");
+    } else if (os.build != 0 && os.build < kProcessLoopbackSinceBuild) {
+        info.reason = "Windows build " + std::to_string(os.build) + " is older than " + std::to_string(kProcessLoopbackSinceBuild)
+            + " (Windows 10 version 2004): this version has no per process audio capture, in any application. "
+              "Updating Windows to 2004 or newer enables filtering.";
+        info.checks.push_back("Real activation of a per process capture: refused");
         info.checks.push_back(buildCheckText(os.build));
         info.checks.push_back("Capturing all system audio is available, but applications cannot be filtered in it");
-        info.checks.push_back("The plugin will not replace filtering with other means (virtual devices, "
-                              "routing) — the requirements forbid it");
+        info.checks.push_back("The plugin will not replace filtering with other means (virtual devices, routing) — the "
+                              "requirements forbid it");
+    } else {
+        info.reason = "A per process audio capture could not be activated even though this Windows build supports it. "
+                      "The stage log above names the step that failed and its exact HRESULT — the version of the system "
+                      "is not the reason.";
+        info.checks.push_back("Real activation of a per process capture: refused (stage log above)");
+        info.checks.push_back(buildCheckText(os.build));
+        info.checks.push_back(run.engineWorks
+                ? "The activation without a process filter works: the audio engine itself is fine, so the failure is "
+                  "specific to the per process activation"
+                : "The activation without a process filter failed too: this is not specific to per process capture");
+        info.checks.push_back("Capturing all system audio is available, but applications cannot be filtered in it");
+        info.checks.push_back("The plugin will not replace filtering with other means (virtual devices, routing) — the "
+                              "requirements forbid it");
     }
     return info;
 }
