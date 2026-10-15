@@ -50,4 +50,26 @@ inline bool sameGuid(const GUID& left, const GUID& right) {
         && left.Data4[6] == right.Data4[6] && left.Data4[7] == right.Data4[7];
 }
 
+/**
+ * Builds the interleaved float format the plugin asks the audio engine for:
+ * WAVE_FORMAT_EXTENSIBLE, 32 bit float, the requested channel count.
+ *
+ * 32 bit float is what the DSP core works in, and with AUTOCONVERTPCM the
+ * engine converts it from whatever the endpoint uses, so the plugin does not
+ * have to guess the device format.
+ */
+inline void makeFloatFormat(WAVEFORMATEXTENSIBLE& format, int sampleRate, int channels) {
+    format = {};
+    format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    format.Format.nChannels = static_cast<WORD>(channels);
+    format.Format.nSamplesPerSec = static_cast<DWORD>(sampleRate);
+    format.Format.wBitsPerSample = 32;
+    format.Format.nBlockAlign = static_cast<WORD>(channels * 4);
+    format.Format.nAvgBytesPerSec = static_cast<DWORD>(sampleRate * channels * 4);
+    format.Format.cbSize = static_cast<WORD>(sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX));
+    format.Samples.wValidBitsPerSample = 32;
+    format.dwChannelMask = channels >= 2 ? kSpeakerStereo : kSpeakerMono;
+    format.SubFormat = kSubFormatIeeeFloat;
+}
+
 } // namespace saf::win

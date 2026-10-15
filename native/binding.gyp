@@ -7,6 +7,7 @@
                 "src/app_identity.cc",
                 "src/capture_group.cc",
                 "src/engine.cc",
+                "src/hr_advice.cc",
                 "src/platform.cc",
                 "src/dsp/convert.cc",
                 "src/dsp/mixer.cc",
