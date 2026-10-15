@@ -164,16 +164,20 @@ jobs:
           frames, frames flagged silent, **non-zero samples**, peak and RMS. It installs nothing, changes
           no setting and writes no audio to disk:\`\`\`
 
-              process-loopback-probe.exe --playing                    (who is playing right now)
-              process-loopback-probe.exe --system --self-tone           (control: the tone must come back)
-              process-loopback-probe.exe --process spotify.exe --seconds 8
+              process-loopback-probe.exe --playing                           (who is playing right now)
+              process-loopback-probe.exe --spawn-tone --seconds 8            (decisive: a second process plays the tone)
+              process-loopback-probe.exe --spawn-tone --system --seconds 8   (the same check on the device path)
+              process-loopback-probe.exe --process spotify.exe --seconds 8   (the real case)
 
           \`\`\`Use it before reporting a capture problem. A run whose \`data\` line shows non-zero samples
           means audio really flows; a red stage names the step and the HRESULT that refused it. Two
           results that do **not** prove anything, and are called out in the output for that reason: a
-          high frame count with zeros (a stream can be perfectly paced and silent), and a missing
-          \`--self-tone\` tone in the per process mode (the probe captures itself, and a process is not
-          guaranteed to capture its own audio — \`--system\` is the decisive check for that path).
+          high frame count with zeros (a stream can be perfectly paced and silent), and a missing tone
+          that the probe played *itself* (with one process as both source and observer the run cannot
+          tell a capture that missed the content apart from a tone that never reached the mix of the
+          captured device — \`--spawn-tone\` is the decisive version). The tone search itself was fixed
+          after the first real run reported a tone that was in the audio as missing: it analysed
+          interleaved stereo as if it were mono, which moves a 1 kHz tone to half its frequency.
           Details in \`docs/PROBE.md\`, which also quotes the first real run on Windows 10 19045.7725.
 
           **Gates this build passed:** portable DSP and engine tests (\`g++\`), the TypeScript
