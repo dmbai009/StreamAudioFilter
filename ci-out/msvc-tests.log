@@ -13,6 +13,7 @@ mixer.cc
 Generating Code...
 engine_tests.cc
 app_identity.cc
+capture_group.cc
 engine.cc
 mock_backend.cc
 ring_buffer.cc
@@ -42,6 +43,9 @@ StreamAudioFilter engine tests
 == applications closing / disappearing
 == stream limit
 == mixing output
+== multi instance applications: roots, splitting, no duplication
+== engine: two instances of one application
+== engine: child process is not captured as a second instance
 == capture gate (plugin must be quiet while nothing is shared)
 
-41 checks, 0 failure(s)
+65 checks, 0 failure(s)
