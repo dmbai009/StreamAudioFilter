@@ -90,6 +90,36 @@ The free threaded marshaler variant of the documented cure is deliberately *not*
 the marshaler — a reference cycle that would leak one callback object per activation, and one activation
 happens per captured application and per restart.
 
+**What the real run on build 19045.7725 then showed.** With the fix in place, the standalone probe
+reported, for its own process tree and again for `chrome.exe`:
+
+```text
+[handler] completion handler at ... answers IAgileObject: yes
+[activation-call] accepted (the audio engine will call back on a worker thread)
+[activation-wait] the completion callback fired
+[activate-result] S_OK - the capture client exists
+[client-init] 48 kHz / 2 channels / 32 bit float accepted
+[capture-start] the capture is running
+[data] 799 packet(s), 383520 frames, ...
+```
+
+So on Windows 10 19045 the activation succeeds, the format is accepted, the stream starts and the audio
+engine delivers packets at the correct rate. The build number is not what stood in the way — the
+non-agile completion handler was. (The `[data]` numbers alone do not prove that a specific application's
+audio is inside those packets: see below and [PROBE.md](PROBE.md).)
+
+Two further statements that the first run corrected, both now built into the probe:
+
+* **"0 frames flagged silent" is not evidence of audio.** A process loopback stream does not set the
+  silent flag, so the number says nothing — the count of non-zero samples and the peak do. That is why
+  the plugin's capability walk and the probe now measure the samples instead of trusting the flag.
+* **A 1 kHz tone played by the capturing program is not a valid end-to-end test.** The probe captures its
+  own process tree, and the audio of the process that performs the capturing is not guaranteed to appear
+  in its own capture — the first run reported a tone magnitude of `0.000007` while the capture itself was
+  working. The probe reports that outcome as a limitation of the test (and never as a failed capture),
+  and the decisive check of that path is now `--system`, a classic WASAPI loopback of the whole system
+  audio in which the tone *must* come back.
+
 Checking a specific machine without Discord: **`process-loopback-probe.exe`**
 
 The repository also ships a standalone probe (built by CI, attached to every release, documented in
