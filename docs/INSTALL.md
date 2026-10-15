@@ -18,7 +18,7 @@ page, where the two archives are attached).
 ### A. One command, Vencord is built on your machine
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -DownloadAddon v0.1.0
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -DownloadAddon latest
 ```
 
 Run it from this repository, or download just `scripts/install.ps1` and run it anywhere: in that case
@@ -31,7 +31,7 @@ The script
 * installs its dependencies, copies this plugin into `src\userplugins\StreamAudioFilter`, builds
   Vencord, and verifies that the built bundle really contains the plugin;
 * puts the native addon into `%APPDATA%\Vencord\streamAudioFilter\native\` — with
-  `-DownloadAddon v0.1.0` it comes from the release, `-BuildAddon` compiles it locally,
+  `-DownloadAddon latest` it comes from the release, `-BuildAddon` compiles it locally,
   `-AddonPath <file>` uses a file you already have. Without any of them the plugin is installed but
   fails closed: it removes the share audio and says why;
 * patches Discord with your build. That step downloads the official `VencordInstallerCli.exe` from
@@ -43,7 +43,7 @@ plugin stays where it is.
 ### B. Nothing to build at all — the prebuilt bundle
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Prebuilt v0.1.0
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Prebuilt latest
 ```
 
 No Node.js, no compiler, no git: the script downloads Vencord with the plugin already built into it
