@@ -68,7 +68,10 @@ export default definePlugin({
         // the actual work; these handlers make the state visible even when the
         // audio request never reaches the renderer (which would be a failure
         // worth reporting instead of hiding).
-        STREAM_CREATE: () => store.markStreamStarted(),
+        STREAM_CREATE: () => {
+            store.markStreamStarted();
+            interceptor?.noteStreamStart();
+        },
         STREAM_DELETE: () => store.onSessionEnd()
     },
 
@@ -99,9 +102,14 @@ export default definePlugin({
             isAvailable: () => settings.store.filterEnabled,
             unavailableReason: () => store.getSnapshot().lastError || "фильтрация выключена в настройках плагина",
             createTrack: () => store.startFilteredTrack(),
+            // Fail closed by default: without this explicit opt-in the plugin
+            // removes the stream audio when the filter can not be applied
+            // instead of letting the viewers hear the excluded applications.
+            allowUnfilteredFallback: () => settings.store.fallbackUnfiltered,
             onSessionStart: () => store.markStreamStarted(),
             onSessionEnd: () => store.onSessionEnd(),
-            onProblem: message => store.setLastWarning(message)
+            onProblem: (message, kind) => kind === "error" ? store.setLastError(message) : store.setLastWarning(message),
+            onAudioState: (state, reason) => store.onAudioState(state, reason)
         });
 
         if (settings.store.showFloatingPanel) mountFloatingPanel();

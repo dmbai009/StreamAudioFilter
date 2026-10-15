@@ -49,9 +49,25 @@ function app(partial: Partial<AppInfo> & { appKey: string; }): AppInfo {
         error: partial.error ?? "",
         notCapturableReason: partial.notCapturableReason ?? "",
         starvedFrames: 0,
-        state: partial.state ?? "silent"
+        state: partial.state ?? "silent",
+        instances: partial.instances ?? 1
     };
 }
+
+test("an application started twice is one entry that says so", () => {
+    // Both instances share the app key (same executable): they must not become
+    // two entries, but the panel has to mention that two instances are summed.
+    const state = emptyState("allExcept");
+    const entries = buildAppList([
+        app({ appKey: "exe:game", displayName: "Game", instances: 2, captured: true, state: "transmitting" }),
+        app({ appKey: "exe:music", displayName: "Music", instances: 1 })
+    ], state);
+
+    assert.equal(entries.length, 2, "two applications, not three entries");
+    const game = entries.find(entry => entry.appKey === "exe:game")!;
+    assert.match(game.details, /2 экземпляра/);
+    assert.doesNotMatch(entries.find(entry => entry.appKey === "exe:music")!.details, /экземпляр/);
+});
 
 test("mode A transmits unknown applications, mode B does not", () => {
     const all = emptyState("allExcept");

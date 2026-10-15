@@ -180,6 +180,41 @@ test("the whole pipeline works end to end on the test backend", async () => {
     assert.equal(addon.readPcm(480).byteLength, 0);
 });
 
+test("an application started twice is one entry with two captured instances", async () => {
+    assert.equal(json(addon.start({ sampleRate: 48000, blockMs: 10, maxStreams: 8, outputBufferMs: 200, backend: "mock" })).ok, true);
+
+    // Same application (same executable), two independent process trees.
+    const game = APPS[0];
+    addon.setMockApps([
+        game,
+        { ...game, pid: 302 }
+    ]);
+    addon.refresh();
+    addon.setRules({ mode: 1, overrides: { "exe:game": true }, active: true });
+
+    await waitUntil(() => {
+        const listed = json(addon.apps());
+        return listed.length === 1 && listed[0].instances === 2;
+    }, "both instances are grouped into one entry");
+
+    const listed = json(addon.apps());
+    assert.equal(listed.length, 1, "one application, not two entries");
+    assert.equal(listed[0].instances, 2, "the panel knows that two instances are summed");
+    assert.equal(listed[0].captured, true);
+    assert.match(listed[0].format, /экземпляр/, `format describes both trees: ${listed[0].format}`);
+
+    // One stream for the application: the two instances are summed inside the
+    // capture, so the engine does not mix the same application twice.
+    await waitUntil(() => json(addon.stats()).activeStreams === 1, "exactly one stream for the application");
+    await waitUntil(() => {
+        const pcm = addon.readPcm(4800);
+        return pcm.byteLength > 0 && peakOf(pcm) > 0.05;
+    }, "the summed audio of both instances is transmitted");
+
+    addon.setRules({ mode: 0, overrides: {}, active: false });
+    addon.stop();
+});
+
 test("bad arguments are clamped instead of breaking the engine", async () => {
     json(addon.start({ sampleRate: 12345, blockMs: 1000, maxStreams: 0, backend: "mock" }));
     const stats = json(addon.stats());

@@ -78,6 +78,16 @@ export function Diagnostics(props: {
                     </>}
 
                     <Row label="Состояние трансляции" value={stream.active ? (stream.filtering ? "фильтрация активна" : "фильтрация не применена") : "нет трансляции"} />
+                    <Row
+                        label="Звук у зрителей"
+                        value={
+                            stream.audio === "filtered" ? "отфильтрованный"
+                                : stream.audio === "unfiltered" ? "обычный системный (не отфильтрован)"
+                                    : stream.audio === "muted" ? "выключен (фильтрацию применить не удалось)"
+                                        : "трансляция без звука"
+                        }
+                    />
+                    {stream.audioReason && <Row label="Причина" value={stream.audioReason} />}
                     {stream.active && <Row label="Пропуски звука" value={`${stream.underruns}`} />}
 
                     {props.warnings.length > 0 && <>

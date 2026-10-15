@@ -94,6 +94,12 @@ struct AppView {
     std::string state;
     /** Session based: the application is running but has no active stream. */
     bool running = false;
+    /**
+     * Number of independent instances (process trees) of this application.
+     * More than one means the application was started twice and both instances
+     * are captured, summed exactly once.
+     */
+    size_t instances = 0;
 };
 
 struct EngineStats {
@@ -154,7 +160,10 @@ private:
     struct StreamState {
         std::string appKey;
         std::string displayName;
+        /** Process trees this capture is bound to; a change restarts it. */
         std::vector<uint32_t> rootPids;
+        /** Number of process trees the capture currently aggregates. */
+        size_t instances = 0;
         std::unique_ptr<ICaptureSource> source;
         MixSource mix;
         bool enteredMix = false;
