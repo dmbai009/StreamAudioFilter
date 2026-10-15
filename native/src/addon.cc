@@ -265,6 +265,7 @@ napi_value Apps(napi_env env, napi_callback_info) {
         object.string("notCapturableReason", app.notCapturableReason);
         object.number("starvedFrames", static_cast<long long>(app.starvedFrames));
         object.string("state", app.state);
+        object.number("instances", static_cast<long long>(app.instances));
     }
     json += ']';
     return makeString(env, json);

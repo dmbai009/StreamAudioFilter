@@ -52,6 +52,12 @@ export interface AppInfo {
     starvedFrames: number;
     /** transmitting | excluded | silent | error | unsupported */
     state: string;
+    /**
+     * Independent instances (process trees) of this application. More than one
+     * means the application was started twice: both instances are captured and
+     * summed exactly once.
+     */
+    instances: number;
 }
 
 export interface EngineStats {
@@ -168,6 +174,15 @@ export interface AppListEntry {
 export interface StreamStatus {
     active: boolean;
     filtering: boolean;
+    /**
+     * What the viewers actually receive: none (no share audio asked for),
+     * filtered (our mix), unfiltered (Discord's own capture: the filter is off
+     * or the user explicitly allowed the fallback), muted (filtering was asked
+     * for and could not be applied, so the audio was removed — fail closed).
+     */
+    audio: "none" | "filtered" | "unfiltered" | "muted";
+    /** Why the audio is in that state (shown in the panel). */
+    audioReason: string;
     /** Why filtering is inactive, when the user asked for it. */
     reason: string;
     startedAt: number;

@@ -29,6 +29,15 @@ function statusLine(state: ReturnType<typeof useStoreState>): string {
     if (!state.environment) return "Проверка системы…";
     if (!state.environment.addon.loaded) return "Нативный модуль не найден";
 
+    // The audio state is what the viewers get, which is what the user cares
+    // about — and the only state that may not lie about filtering.
+    if (state.stream.audio === "muted") return "Звук трансляции выключен: фильтрация не применилась";
+    if (state.stream.audio === "unfiltered" && state.stream.active) return "Передаётся нефильтрованный системный звук";
+    if (state.stream.audio === "filtered") {
+        const captured = state.apps.filter(app => app.captured).length;
+        return `Трансляция идёт: звук ${captured === 0 ? "ещё не захвачен" : `передаётся для ${captured} прил.`}`;
+    }
+
     if (state.stream.filtering) {
         const captured = state.apps.filter(app => app.captured).length;
         return `Трансляция идёт: звук ${captured === 0 ? "ещё не захвачен" : `передаётся для ${captured} прил.`}`;
@@ -127,6 +136,31 @@ export function FilterControls({ compact = false }: { compact?: boolean; }) {
                     <Flex flexDirection="column" gap="0.25em">
                         <Span size="sm">{state.environment.support.reason}</Span>
                         {state.environment.support.detail && <Span size="xs">{state.environment.support.detail}</Span>}
+                    </Flex>
+                </Card>
+            )}
+
+            {state.stream.audio === "muted" && (
+                <Card variant="danger">
+                    <Flex flexDirection="column" gap="0.25em">
+                        <Span size="sm" weight="semibold">
+                            Зрители не слышат звук демонстрации: фильтрацию применить не удалось.
+                        </Span>
+                        {state.stream.audioReason && <Span size="xs">{state.stream.audioReason}</Span>}
+                        <Span size="xs">
+                            Плагин не передаёт нефильтрованный звук сам: иначе исключённые приложения стали бы слышны.
+                            Настройка «Передавать обычный системный звук, когда фильтрация недоступна» возвращает
+                            обычное поведение Discord.
+                        </Span>
+                    </Flex>
+                </Card>
+            )}
+
+            {state.stream.audio === "unfiltered" && state.stream.active && (
+                <Card variant="warning">
+                    <Flex flexDirection="column" gap="0.25em">
+                        <Span size="sm" weight="semibold">Передаётся нефильтрованный системный звук.</Span>
+                        {state.stream.audioReason && <Span size="xs">{state.stream.audioReason}</Span>}
                     </Flex>
                 </Card>
             )}

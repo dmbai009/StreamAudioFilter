@@ -139,6 +139,7 @@ export function buildAppList(live: AppInfo[], state: RulesState, discordExecutab
         const transmitting = resolveTransmit(state, app.appKey);
         const details: string[] = [];
         if (app.exeName) details.push(app.exeName);
+        if (app.instances > 1) details.push(`${app.instances} экземпляра`);
         if (app.format) details.push(app.format);
         if (app.captured && app.latencyMs >= 0) details.push(`задержка ~${app.latencyMs} мс`);
 

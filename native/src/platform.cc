@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 
+#include "capture_group.h"
 #include "mock/mock_backend.h"
 
 #if defined(_WIN32)
@@ -41,10 +42,19 @@ std::unique_ptr<IAppEnumerator> createEnumerator(BackendKind kind, std::string& 
 }
 
 std::unique_ptr<ICaptureFactory> createCaptureFactory(BackendKind kind, std::string& error) {
-    if (kind == BackendKind::Mock) return std::make_unique<mock::MockCaptureFactory>();
+    if (kind == BackendKind::Mock) {
+        return std::make_unique<GroupingCaptureFactory>(std::make_unique<mock::MockCaptureFactory>());
+    }
 
 #if defined(_WIN32)
-    if (kind == BackendKind::Auto || kind == BackendKind::Wasapi) return win::createCaptureFactory(error);
+    if (kind == BackendKind::Auto || kind == BackendKind::Wasapi) {
+        auto inner = win::createCaptureFactory(error);
+        if (!inner) return nullptr;
+        // One application can be started twice: the grouping factory captures
+        // each of its process trees and mixes them into the one stream the
+        // engine, the UI and the stream limit expect.
+        return std::make_unique<GroupingCaptureFactory>(std::move(inner));
+    }
 #else
     if (kind == BackendKind::Wasapi) {
         error = "WASAPI доступен только в Windows";
@@ -53,7 +63,7 @@ std::unique_ptr<ICaptureFactory> createCaptureFactory(BackendKind kind, std::str
 #endif
 
     error = "нативный захват доступен только в Windows — включён тестовый режим";
-    return std::make_unique<mock::MockCaptureFactory>();
+    return std::make_unique<GroupingCaptureFactory>(std::make_unique<mock::MockCaptureFactory>());
 }
 
 #if defined(_WIN32)
@@ -68,7 +78,7 @@ SupportInfo probeSupport() {
     SupportInfo info;
     info.supported = false;
     info.os = describePlatform();
-    info.reason = "Фильтрация по приложениям возможна только в Windows 10 (сборка 20348+) и Windows 11.";
+    info.reason = "Захват звука отдельных приложений работает только в Windows (нужен WASAPI Process Loopback).";
     info.detail = "Сейчас работает тестовый режим: звук генерируется сигнал-генератором.";
     info.checks.push_back("Платформа не Windows: WASAPI недоступен");
     info.checks.push_back("Тестовый режим доступен всегда (нужен только для проверки интерфейса)");

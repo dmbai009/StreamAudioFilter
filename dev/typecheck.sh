@@ -52,6 +52,9 @@ fi
 echo "== rule engine tests =="
 npx tsx src/userplugins/StreamAudioFilter/tests/rules.test.ts
 
+echo "== stream interceptor tests (fail closed policy) =="
+npx tsx src/userplugins/StreamAudioFilter/tests/intercept.test.ts
+
 echo "== eslint =="
 npx eslint "src/userplugins/StreamAudioFilter"
 echo "== ok =="

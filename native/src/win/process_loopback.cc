@@ -126,14 +126,21 @@ std::string describeFormat(const WAVEFORMATEX* format) {
 }
 
 /**
- * Captures one application (its process tree) and delivers interleaved float32
- * stereo at the requested sample rate.
+ * Captures exactly one process tree and delivers interleaved float32 stereo at
+ * the requested sample rate.
+ *
+ * Windows' process loopback activation takes a single TargetProcessId, so this
+ * class handles one root process: request.rootPids.front(). An application
+ * started twice has several roots; GroupingCaptureFactory (portable, see
+ * capture_group.h) splits the request and sums the resulting captures, so no
+ * tree is captured twice and no instance is left out.
  */
 class ProcessLoopbackCapture : public ICaptureSource {
 public:
-    explicit ProcessLoopbackCapture(CaptureRequest request)
+    explicit ProcessLoopbackCapture(CaptureRequest request, std::string note = {})
         : request_(std::move(request))
-        , buffer_(static_cast<size_t>(request_.sampleRate) / 2, static_cast<size_t>(request_.channels)) {}
+        , buffer_(static_cast<size_t>(request_.sampleRate) / 2, static_cast<size_t>(request_.channels))
+        , note_(std::move(note)) {}
 
     ~ProcessLoopbackCapture() override { stop(); }
 
@@ -191,7 +198,8 @@ public:
 
     std::string lastError() const override {
         std::lock_guard<std::mutex> lock(mutex_);
-        return error_;
+        if (error_.empty()) return note_;
+        return note_.empty() ? error_ : error_ + " (" + note_ + ")";
     }
 
 private:
@@ -239,8 +247,9 @@ private:
         if (FAILED(hr) && error.empty()) {
             error = formatHresult(hr, "не удалось активировать захват процесса " + std::to_string(targetPid_));
             if (hr == E_INVALIDARG || hr == E_NOTIMPL) {
-                error += " (похоже, эта сборка Windows не поддерживает захват отдельного процесса: нужна Windows 11 "
-                         "или Windows 10 сборки 20348 и новее)";
+                error += " (эта сборка Windows отказала в активации захвата отдельного процесса; Windows 10 "
+                         "сборки 19041/2004 и новее такой захват в действительности поддерживают, поэтому точный "
+                         "код ошибки важнее номера сборки)";
             }
         }
 
@@ -369,6 +378,8 @@ private:
     HANDLE captureEvent_ = nullptr;
 
     mutable std::mutex mutex_;
+    /** Non fatal remark about the request itself, shown in the diagnostics. */
+    std::string note_;
     std::string error_;
     std::string format_ = "не запущено";
     int latencyMs_ = -1;
@@ -477,19 +488,23 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
 }
 
 /**
- * Creates one capture per root process of the application.
+ * Creates a capture for one process tree.
  *
- * Most applications have exactly one root; a program started twice from the
- * same path has two, and both must be captured to hear both instances. The
- * engine only ever creates one capture per application, so no audio can be
- * captured (and therefore mixed) twice.
+ * Requests with several roots are split by GroupingCaptureFactory before they
+ * reach this factory (see capture_group.h), so one call always means one tree.
+ * The process tree filter covers the children of that root, which is why a
+ * single activation captures e.g. every process of Chrome.
  */
 class WasapiCaptureFactory : public ICaptureFactory {
 public:
     std::unique_ptr<ICaptureSource> create(const CaptureRequest& request) override {
         if (request.rootPids.empty()) return nullptr;
-        // Children are covered by the process tree filter, so capturing the
-        // first root is enough unless there are unrelated instances.
+        if (request.rootPids.size() > 1) {
+            // Should not happen: the grouping factory splits first. Capturing
+            // only the first tree would silently lose the other instances, so
+            // say it in the diagnostics instead of hiding it.
+            return std::make_unique<ProcessLoopbackCapture>(request, "запрос с несколькими корневыми процессами не разделён");
+        }
         return std::make_unique<ProcessLoopbackCapture>(request);
     }
 

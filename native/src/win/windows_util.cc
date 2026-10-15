@@ -312,6 +312,23 @@ private:
 
 } // namespace
 
+/**
+ * Minimum build that is known to implement process loopback.
+ *
+ * Microsoft documents the API as "Windows 10 Build 20348" (Server 2022), which
+ * is the build the public contract was written against. In practice the audio
+ * engine side has been present since Windows 10 version 2004 (build 19041):
+ * that is the build OBS requires for its "Application Audio Capture" source and
+ * the build every third party process loopback implementation relies on.
+ *
+ * Because both statements can only be *verified* by asking the operating
+ * system, this file never decides by version number: it performs a real
+ * activation attempt and reports its HRESULT. The build number is context for
+ * the user, not the verdict (see docs/LIMITATIONS.md).
+ */
+constexpr uint32_t kProcessLoopbackSinceBuild = 19041;  // Windows 10, version 2004
+constexpr uint32_t kDocumentedBuild = 20348;            // Windows Server 2022 / Windows 11 SDK
+
 bool probeProcessLoopback(std::string& detail) {
     const OsVersion os = osVersion();
     detail = describePlatform() + "\n";
@@ -342,8 +359,9 @@ bool probeProcessLoopback(std::string& detail) {
     if (FAILED(hr)) {
         detail += "ActivateAudioInterfaceAsync: " + formatHresult(hr, "не удалось вызвать") + "\n";
         if (hr == E_INVALIDARG || hr == E_NOTIMPL) {
-            detail += "Это изменение Windows 11 / Windows Server 2022: сборки Windows 10 до 20348 не поддерживают "
-                      "захват звука отдельного процесса.\n";
+            detail += "Система отказала в вызове: так выглядит отсутствие захвата по процессу. Windows 10 "
+                      "сборки 19041 (версия 2004) и новее этот захват поддерживают, поэтому сначала проверьте "
+                      "обновления Windows и целостность аудиослужбы.\n";
         }
     } else {
         const DWORD wait = WaitForSingleObject(completed, 5000);
@@ -354,9 +372,14 @@ bool probeProcessLoopback(std::string& detail) {
             ComPtr<IUnknown> activated;
             if (FAILED(operation->GetActivateResult(&activateResult, activated.put())) || FAILED(activateResult)) {
                 detail += "GetActivateResult: " + formatHresult(FAILED(activateResult) ? activateResult : E_FAIL, "активация отклонена") + "\n";
-                if (os.build != 0 && os.build < 20348) {
-                    detail += "Сборка " + std::to_string(os.build) + " младше 20348: Windows 10 не поддерживает "
-                              "захват звука отдельного приложения.\n";
+                if (os.build != 0 && os.build < kProcessLoopbackSinceBuild) {
+                    detail += "Сборка " + std::to_string(os.build) + " старше " + std::to_string(kProcessLoopbackSinceBuild)
+                              + " (Windows 10 версии 2004) — в этой версии захвата по процессу действительно нет "
+                              "ни в одном приложении.\n";
+                } else if (os.build != 0) {
+                    detail += "Сборка " + std::to_string(os.build) + " формально поддерживает захват по процессу "
+                              "(нужна 19041/2004 и новее), но активация отклонена — причина в самом коде отказа выше, "
+                              "а не в версии Windows.\n";
                 }
             } else {
                 supported = true;
@@ -388,6 +411,21 @@ bool probeProcessLoopback(std::string& detail) {
     return supported;
 }
 
+/** What the build number means for process loopback (context, not a verdict). */
+std::string buildCheckText(uint32_t build) {
+    if (build == 0) return "Версия Windows не определена — решение принимает только попытка активации";
+    if (build < kProcessLoopbackSinceBuild) {
+        return "Windows build " + std::to_string(build) + " (< " + std::to_string(kProcessLoopbackSinceBuild)
+            + ", Windows 10 до версии 2004): захвата по процессу нет";
+    }
+    if (build < kDocumentedBuild) {
+        return "Windows build " + std::to_string(build) + " (Windows 10 версии 2004 и новее): захват по процессу "
+            "работает, хотя в документации указана сборка " + std::to_string(kDocumentedBuild);
+    }
+    return "Windows build " + std::to_string(build) + " >= " + std::to_string(kDocumentedBuild)
+        + ": захват по процессу в документации и на практике";
+}
+
 SupportInfo probeSupport() {
     SupportInfo info;
     const OsVersion os = osVersion();
@@ -399,16 +437,20 @@ SupportInfo probeSupport() {
     info.detail = detail;
 
     if (info.supported) {
-        info.reason = "Захват звука отдельных приложений доступен.";
-        info.checks.push_back("Windows build " + std::to_string(os.build) + " >= 20348");
+        info.reason = "Захват звука отдельных приложений доступен (проверено настоящей попыткой активации).";
+        info.checks.push_back("Реальная активация захвата по процессу: успешно (HRESULT S_OK)");
+        info.checks.push_back(buildCheckText(os.build));
         info.checks.push_back("Отдельные устройства вывода не требуются: захват идёт за процессом");
         info.checks.push_back("Права администратора не нужны");
     } else {
-        info.reason = os.build != 0 && os.build < 20348
-            ? "Windows 10 до сборки 20348 не поддерживает захват звука отдельного процесса (Windows Audio Session API "
-              "Process Loopback). Требуется Windows 11 (или Windows Server 2022 и новее)."
-            : "Не удалось активировать захват звука отдельного процесса — подробности ниже.";
-        info.checks.push_back("Захват отдельного процесса недоступен");
+        info.reason = os.build != 0 && os.build < kProcessLoopbackSinceBuild
+            ? "Windows сборки " + std::to_string(os.build) + " старше " + std::to_string(kProcessLoopbackSinceBuild)
+              + " (Windows 10 версии 2004): захвата звука по процессу в этой версии нет ни в одном приложении. "
+              "Обновление Windows до 2004 и новее включает фильтрацию."
+            : "Не удалось активировать захват звука отдельного процесса, хотя сборка Windows его поддерживает — "
+              "точный код ошибки ниже, версия системы здесь не при чём.";
+        info.checks.push_back("Реальная активация захвата по процессу: отказ (подробности ниже)");
+        info.checks.push_back(buildCheckText(os.build));
         info.checks.push_back("Захват всего системного звука доступен, но фильтровать приложения в нём нельзя");
         info.checks.push_back("Плагин не будет подменять фильтрацию другими способами (виртуальные устройства, "
                               "маршрутизация) — это запрещено требованиями");

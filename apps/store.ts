@@ -49,7 +49,17 @@ function initialState(): StoreState {
         apps: [],
         stats: null,
         icons: {},
-        stream: { active: false, filtering: false, reason: "", startedAt: 0, underruns: 0, pipelinedMs: 0, sampleRate: SAMPLE_RATE },
+        stream: {
+            active: false,
+            filtering: false,
+            reason: "",
+            audio: "none",
+            audioReason: "",
+            startedAt: 0,
+            underruns: 0,
+            pipelinedMs: 0,
+            sampleRate: SAMPLE_RATE
+        },
         panelsOpen: 0,
         engineRunning: false,
         loading: false,
@@ -251,13 +261,33 @@ class Store {
         this.startPolling();
     }
 
+    /**
+     * The interceptor reports what the viewers actually receive. This is the
+     * state the panel shows, so a failed filter can not look like a working one.
+     */
+    onAudioState(state: StreamStatus["audio"], reason: string): void {
+        this.set({ stream: { ...this.state.stream, audio: state, audioReason: reason } });
+    }
+
     /** Called when the share ends (or the plugin is stopped). */
     stopFiltering(reason = ""): void {
         if (this.track) {
             this.track.stop();
             this.track = null;
         }
-        this.set({ stream: { active: false, filtering: false, reason, startedAt: 0, underruns: 0, pipelinedMs: 0, sampleRate: SAMPLE_RATE } });
+        this.set({
+            stream: {
+                active: false,
+                filtering: false,
+                reason,
+                audio: "none",
+                audioReason: "",
+                startedAt: 0,
+                underruns: 0,
+                pipelinedMs: 0,
+                sampleRate: SAMPLE_RATE
+            }
+        });
         void this.applyRules();
         this.scheduleIdleShutdown();
     }

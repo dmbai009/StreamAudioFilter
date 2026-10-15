@@ -5,6 +5,7 @@
             "sources": [
                 "src/addon.cc",
                 "src/app_identity.cc",
+                "src/capture_group.cc",
                 "src/engine.cc",
                 "src/platform.cc",
                 "src/dsp/convert.cc",

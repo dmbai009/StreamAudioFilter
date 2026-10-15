@@ -20,6 +20,12 @@ export const settings = definePluginSettings({
         description: "Фильтровать звук демонстрации экрана (иначе передаётся обычный системный звук)",
         default: true
     },
+    fallbackUnfiltered: {
+        type: OptionType.BOOLEAN,
+        description: "Передавать обычный системный звук, когда фильтрация недоступна. Зрители услышат все приложения — "
+            + "выключено по умолчанию: без этого плагин убирает звук из трансляции, а не подставляет нефильтрованный",
+        default: false
+    },
     showAccountPanelButton: {
         type: OptionType.BOOLEAN,
         description: "Кнопка «Звук трансляции» рядом с кнопками микрофона внизу окна",
