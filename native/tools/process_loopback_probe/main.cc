@@ -1,10 +1,10 @@
-// StreamAudioFilter — standalone WASAPI process loopback probe
+// StreamAudioFilter - standalone WASAPI process loopback probe
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // A console program that performs *one* thing: it activates a Windows process
 // loopback capture, tells you which stage fails if it fails, and checks whether
 // PCM really arrives. It is independent of Discord, of Vencord and of the
-// plugin's capture engine — but it uses the very same agile completion handler
+// plugin's capture engine - but it uses the very same agile completion handler
 // (native/src/win/com_ptr.h) and the same HRESULT explanations
 // (native/src/hr_advice.cc), so a green run here and a red plugin means the
 // difference is in the plugin, not in the operating system.
@@ -42,11 +42,13 @@
 
 #include <audioclient.h>
 #include <audioclientactivationparams.h>
+#include <audiopolicy.h>
 #include <mmdeviceapi.h>
 #include <propidl.h>
 #include <tlhelp32.h>
 #include <winternl.h>
 
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -56,6 +58,7 @@
 #include <thread>
 #include <vector>
 
+#include "../../src/dsp/packet_measure.h"
 #include "../../src/hr_advice.h"
 #include "../../src/win/audio_subformat.h"
 // The COM identities the SDK only declares (their definitions live in uuid.lib,
@@ -138,7 +141,7 @@ void note(const std::string& stage, const std::string& text) {
 void failed(const std::string& stage, HRESULT hr, const std::string& what) {
     g_failures++;
     if (g_json) return;
-    std::printf("[%-16s] FAILED — %s\n", stage.c_str(), what.c_str());
+    std::printf("[%-16s] FAILED - %s\n", stage.c_str(), what.c_str());
     std::printf("[%-16s] %s\n", stage.c_str(), saf::describeHresult(static_cast<int32_t>(hr)).c_str());
 }
 
@@ -160,7 +163,7 @@ std::string jsonEscape(const std::string& value) {
 /**
  * The callback Windows fills in when the asynchronous activation finishes.
  * It is called from a worker thread of the multi threaded apartment, so it must
- * be an apartment agnostic ("agile") object — that is the whole point of this
+ * be an apartment agnostic ("agile") object - that is the whole point of this
  * program.
  */
 class ActivationHandler : public ComCallback<IActivateAudioInterfaceCompletionHandler, &IID_IActivateAudioInterfaceCompletionHandler> {
@@ -233,7 +236,7 @@ bool equalsIgnoreCase(const std::string& left, const std::string& right) {
  *
  * This is how the probe proves that PCM really arrives: the capture is rooted at
  * our own process tree, so the tone we render must appear in the capture. It is
- * also the honest way to test — no third party application, no user audio.
+ * also the honest way to test - no third party application, no user audio.
  */
 class TonePlayer {
 public:
@@ -319,6 +322,15 @@ public:
     /** 32 bit float mix format (the usual case) or 16 bit PCM. */
     bool floatFormat() const { return formatBits_ == 32; }
 
+    /** How much this program really played - a silent "tone" proves nothing. */
+    uint64_t framesRendered() const { return framesRendered_.load(); }
+
+    std::string renderStatus() const {
+        const int32_t error = renderError_.load();
+        if (error != 0) return "the render client stopped with " + saf::describeHresult(error);
+        return "no render error";
+    }
+
 private:
     void renderLoop() {
         const double twoPi = 6.283185307179586;
@@ -329,16 +341,16 @@ private:
             if (!running_) break;
 
             UINT32 padding = 0;
-            if (FAILED(client_->GetCurrentPadding(&padding))) break;
+            if (FAILED(record(client_->GetCurrentPadding(&padding)))) break;
 
             UINT32 bufferFrames = 0;
-            if (FAILED(client_->GetBufferSize(&bufferFrames))) break;
+            if (FAILED(record(client_->GetBufferSize(&bufferFrames)))) break;
 
             const UINT32 available = bufferFrames - padding;
             if (available == 0) continue;
 
             BYTE* data = nullptr;
-            if (FAILED(render_->GetBuffer(available, &data))) break;
+            if (FAILED(record(render_->GetBuffer(available, &data)))) break;
 
             for (UINT32 frame = 0; frame < available; frame++) {
                 const double sample = kToneAmplitude * std::sin(phase);
@@ -355,8 +367,18 @@ private:
                 }
             }
 
-            render_->ReleaseBuffer(available, 0);
+            if (FAILED(record(render_->ReleaseBuffer(available, 0)))) break;
+            framesRendered_ += available;
         }
+    }
+
+    /** Keeps the first error of the render loop so the report can name it. */
+    HRESULT record(HRESULT hr) {
+        if (FAILED(hr)) {
+            int32_t expected = 0;
+            renderError_.compare_exchange_strong(expected, static_cast<int32_t>(hr));
+        }
+        return hr;
     }
 
     ComPtr<IAudioClient> client_;
@@ -368,22 +390,188 @@ private:
     uint32_t formatRate_ = 48000;
     int formatChannels_ = 2;
     int formatBits_ = 32;
+    std::atomic<uint64_t> framesRendered_ { 0 };
+    std::atomic<int32_t> renderError_ { 0 };
 };
 
-/** Goertzel: the magnitude of @p frequency inside the captured frames. */
-double toneMagnitude(const std::vector<float>& samples, int sampleRate, double frequency) {
-    if (samples.empty()) return 0.0;
-    const double omega = 2.0 * 3.14159265358979323846 * frequency / static_cast<double>(sampleRate);
-    const double coefficient = 2.0 * std::cos(omega);
-    double s1 = 0.0;
-    double s2 = 0.0;
-    for (float value : samples) {
-        const double s0 = static_cast<double>(value) + coefficient * s1 - s2;
-        s2 = s1;
-        s1 = s0;
+/** The tone search itself: saf::dsp::toneMagnitude, shared with the plugin. */
+double findTone(const std::vector<float>& samples, int sampleRate) {
+    return saf::dsp::toneMagnitude(samples.data(), samples.size(), sampleRate, kToneFrequency);
+}
+
+// --------------------------------------------------------------- measurement
+
+struct CaptureWindow {
+    int packets = 0;
+    uint64_t frames = 0;
+    uint64_t silentFrames = 0;
+    saf::dsp::SampleStats stats;
+    /** Kept only for the tone search. Nothing is ever written to disk. */
+    std::vector<float> samples;
+};
+
+/**
+ * Reads the capture for @p seconds and measures what really arrives.
+ *
+ * The number of non-zero samples is the one that matters: a process loopback
+ * stream can deliver packets at exactly the right rate for the whole window and
+ * still carry nothing but silence. "Packets arrived" is not "audio arrived", and
+ * frames flagged AUDCLNT_BUFFERFLAGS_SILENT are a third state again.
+ */
+CaptureWindow collectCapture(IAudioCaptureClient* capture, HANDLE event, int seconds, int channels, bool floatData,
+    bool keepSamples) {
+    CaptureWindow window;
+    const ULONGLONG deadline = GetTickCount64() + static_cast<ULONGLONG>(seconds) * 1000;
+
+    while (GetTickCount64() < deadline) {
+        if (event) WaitForSingleObject(event, kPacketTimeoutMs);
+
+        UINT32 available = 0;
+        while (SUCCEEDED(capture->GetNextPacketSize(&available)) && available > 0) {
+            BYTE* data = nullptr;
+            UINT32 frames = 0;
+            DWORD packetFlags = 0;
+            if (FAILED(capture->GetBuffer(&data, &frames, &packetFlags, nullptr, nullptr))) break;
+
+            window.packets++;
+            window.frames += frames;
+            const bool silent = (packetFlags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+            if (silent || !data) {
+                window.silentFrames += frames;
+            } else {
+                const size_t count = static_cast<size_t>(frames) * static_cast<size_t>(channels);
+                if (floatData) {
+                    const auto* values = reinterpret_cast<const float*>(data);
+                    saf::dsp::measureFloats(values, count, window.stats);
+                    if (keepSamples) window.samples.insert(window.samples.end(), values, values + count);
+                } else {
+                    // The 16 bit PCM fallback format, scaled to the same -1..1 range so
+                    // that the numbers mean the same thing in both cases.
+                    const auto* values = reinterpret_cast<const int16_t*>(data);
+                    saf::dsp::measureInt16(values, count, window.stats);
+                    if (keepSamples) {
+                        for (size_t i = 0; i < count; i++)
+                            window.samples.push_back(static_cast<float>(values[i]) / 32768.0f);
+                    }
+                }
+            }
+
+            capture->ReleaseBuffer(frames);
+        }
     }
-    const double power = s1 * s1 + s2 * s2 - coefficient * s1 * s2;
-    return 2.0 * std::sqrt(power < 0.0 ? 0.0 : power) / static_cast<double>(samples.size());
+    return window;
+}
+
+/** One line about what arrived: silence and audio look completely different. */
+void reportWindow(const CaptureWindow& window, const WAVEFORMATEX* negotiated) {
+    std::string text = std::to_string(window.packets) + " packet(s), " + std::to_string(window.frames) + " frames, "
+        + std::to_string(window.silentFrames) + " frames flagged silent";
+    if (negotiated) {
+        text += ", " + std::to_string(negotiated->nSamplesPerSec) + " Hz / " + std::to_string(negotiated->nChannels)
+            + " channels / " + std::to_string(negotiated->wBitsPerSample) + " bit";
+    }
+    if (window.stats.samples > 0) {
+        char numbers[192];
+        std::snprintf(numbers, sizeof(numbers), ", peak %.6f, RMS %.6f, non-zero samples %llu", window.stats.peak,
+            window.stats.rms(), static_cast<unsigned long long>(window.stats.nonzero));
+        text += numbers;
+        text += window.stats.nonzero == 0 ? " - the stream carries pure silence (zeros, not flagged)"
+                                          : " - the stream carries audio";
+    }
+    note("data", text);
+}
+
+/** PKEY_Device_FriendlyName - {a45c254e-df1c-4efd-8020-67d146a850e0}, 14. */
+const PROPERTYKEY kFriendlyName = {
+    { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14
+};
+
+/** The name of the default output device, so a virtual cable is recognisable. */
+std::string defaultRenderEndpointName() {
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(enumerator.put()))))
+        return {};
+
+    ComPtr<IMMDevice> device;
+    if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, device.put())) || !device) return {};
+
+    ComPtr<IPropertyStore> store;
+    if (FAILED(device->OpenPropertyStore(STGM_READ, store.put())) || !store) return {};
+
+    PROPVARIANT value;
+    PropVariantInit(&value);
+    std::string name;
+    if (SUCCEEDED(store->GetValue(kFriendlyName, &value)) && value.vt == VT_LPWSTR && value.pwszVal) {
+        const int size = WideCharToMultiByte(CP_UTF8, 0, value.pwszVal, -1, nullptr, 0, nullptr, nullptr);
+        if (size > 1) {
+            std::string utf8(static_cast<size_t>(size - 1), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, value.pwszVal, -1, utf8.data(), size, nullptr, nullptr);
+            name = utf8;
+        }
+    }
+    PropVariantClear(&value);
+    return name;
+}
+
+/**
+ * Processes that hold an ACTIVE audio session: the ones really playing something
+ * right now, which is exactly what a capture test needs as a target.
+ */
+void listPlayingProcesses() {
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ComGuard comGuard(SUCCEEDED(com));
+    if (FAILED(com) && com != RPC_E_CHANGED_MODE) {
+        std::printf("COM could not be initialised\n");
+        return;
+    }
+
+    {
+        ComPtr<IMMDeviceEnumerator> enumerator;
+        ComPtr<IMMDevice> device;
+        ComPtr<IAudioSessionManager2> manager;
+        ComPtr<IAudioSessionEnumerator> sessions;
+        int count = 0;
+
+        if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(enumerator.put())))) {
+            std::printf("the audio device enumerator is unavailable\n");
+        } else if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, device.put())) || !device) {
+            std::printf("there is no default output device\n");
+        } else if (FAILED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, manager.putVoid()))
+            || !manager || FAILED(manager->GetSessionEnumerator(sessions.put())) || !sessions
+            || FAILED(sessions->GetCount(&count))) {
+            std::printf("the audio session manager is unavailable\n");
+        } else {
+            const std::string endpoint = defaultRenderEndpointName();
+            std::printf("default output: %s\n", endpoint.empty() ? "(name unavailable)" : endpoint.c_str());
+            std::printf("processes playing audio right now:\n");
+
+            const std::vector<ProcessEntry> processes = processList();
+            int printed = 0;
+            for (int i = 0; i < count; i++) {
+                ComPtr<IAudioSessionControl> control;
+                if (FAILED(sessions->GetSession(i, control.put())) || !control) continue;
+
+                AudioSessionState state = AudioSessionStateInactive;
+                if (FAILED(control->GetState(&state)) || state != AudioSessionStateActive) continue;
+
+                DWORD pid = 0;
+                ComPtr<IAudioSessionControl2> control2;
+                if (SUCCEEDED(control->QueryInterface(IID_PPV_ARGS(control2.put())))) control2->GetProcessId(&pid);
+
+                std::string name = "(unknown)";
+                for (const ProcessEntry& entry : processes) {
+                    if (entry.pid == pid && !entry.exeName.empty()) {
+                        name = entry.exeName;
+                        break;
+                    }
+                }
+                std::printf("  %6lu  %s\n", static_cast<unsigned long>(pid), name.c_str());
+                printed++;
+            }
+            if (printed == 0)
+                std::printf("  (none - start playback in the application you want to test with)\n");
+        }
+    }
 }
 
 // ------------------------------------------------------------------ the probe
@@ -395,6 +583,8 @@ struct Options {
     bool exclude = false;
     bool selfTone = false;
     bool list = false;
+    bool playing = false;
+    bool system = false;
 };
 
 struct RunResult {
@@ -403,6 +593,10 @@ struct RunResult {
     double tone = 0.0;
     uint64_t frames = 0;
     uint64_t silentFrames = 0;
+    uint64_t nonZeroSamples = 0;
+    double peak = 0.0;
+    double rms = 0.0;
+    uint64_t toneFrames = 0;
     int packets = 0;
     std::string format;
     std::string failureStage;
@@ -423,7 +617,7 @@ int runProbe(const Options& options, RunResult& result) {
     } else if (com == S_FALSE) {
         note("com", "CoInitializeEx(COINIT_MULTITHREADED): S_FALSE (already initialised)");
     } else if (com == RPC_E_CHANGED_MODE) {
-        note("com", "CoInitializeEx(COINIT_MULTITHREADED): RPC_E_CHANGED_MODE — the thread is STA, COM has to marshal "
+        note("com", "CoInitializeEx(COINIT_MULTITHREADED): RPC_E_CHANGED_MODE - the thread is STA, COM has to marshal "
                     "the callback (legal for an agile handler, fatal without one)");
     }
     const HRESULT comExpected = com == RPC_E_CHANGED_MODE ? S_OK : com;
@@ -435,7 +629,11 @@ int runProbe(const Options& options, RunResult& result) {
     }
 
     // ------------------------------------------------------------------ stage 2
-    EventGuard eventGuard(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    // Auto reset on purpose: the audio engine signals this event once per period,
+    // and a manual reset event would stay signalled after the first callback, which
+    // would turn the rest of the capture window into a busy spin that competes with
+    // the capture it is supposed to measure.
+    EventGuard eventGuard(CreateEventW(nullptr, FALSE, FALSE, nullptr));
     if (!eventGuard.get()) {
         failed("com", E_FAIL, "the synchronisation event could not be created");
         result.failureStage = "com";
@@ -451,7 +649,7 @@ int runProbe(const Options& options, RunResult& result) {
         if (agile) static_cast<IUnknown*>(agile)->Release();
         note("handler", std::string("completion handler is an agile object: ") + (isAgile ? "yes" : "NO"));
         if (!isAgile) {
-            failed("handler", E_ILLEGAL_METHOD_CALL, "the handler does not answer IAgileObject — Windows would refuse "
+            failed("handler", E_ILLEGAL_METHOD_CALL, "the handler does not answer IAgileObject - Windows would refuse "
                                                      "the activation below");
         }
     }
@@ -531,7 +729,7 @@ int runProbe(const Options& options, RunResult& result) {
         result.failureText = saf::describeHresult(static_cast<int32_t>(activation));
         return 1;
     }
-    note("activate-result", "S_OK — the capture client exists");
+    note("activate-result", "S_OK - the capture client exists");
 
     // ------------------------------------------------------------------ stage 7
     ComPtr<IAudioClient> client;
@@ -599,10 +797,23 @@ int runProbe(const Options& options, RunResult& result) {
         return 1;
     }
 
+    // GetBufferSize has no useful meaning for a process loopback client: the value
+    // it returns is not a packet size, and on some systems it is large nonsense
+    // (hundreds of millions of frames). It is validated before being printed and is
+    // never used to size or pace anything.
     UINT32 bufferFrames = 0;
-    client->GetBufferSize(&bufferFrames);
-    note("buffer-size", std::to_string(bufferFrames) + " frames per packet ("
-        + std::to_string(bufferFrames * 1000 / negotiated->nSamplesPerSec) + " ms)");
+    const HRESULT sizeHr = client->GetBufferSize(&bufferFrames);
+    const UINT32 saneLimit = static_cast<UINT32>(negotiated->nSamplesPerSec) * 4;  // 4 seconds
+    if (FAILED(sizeHr)) {
+        note("buffer-size", "the engine does not report a packet size: "
+            + saf::describeHresult(static_cast<int32_t>(sizeHr)));
+    } else if (bufferFrames == 0 || bufferFrames > saneLimit) {
+        note("buffer-size", "the engine reported " + std::to_string(bufferFrames) + " frames, which is not a usable "
+            "value for this kind of client - treated as unknown, not as a latency");
+    } else {
+        note("buffer-size", std::to_string(bufferFrames) + " frames per packet ("
+            + std::to_string(bufferFrames * 1000 / negotiated->nSamplesPerSec) + " ms)");
+    }
 
     // ----------------------------------------------------------------- stage 10
     hr = client->SetEventHandle(completed);
@@ -628,55 +839,222 @@ int runProbe(const Options& options, RunResult& result) {
         }
     }
 
-    std::vector<float> samples;
-    const ULONGLONG deadline = GetTickCount64() + static_cast<ULONGLONG>(options.seconds) * 1000;
-    while (GetTickCount64() < deadline) {
-        WaitForSingleObject(completed, kPacketTimeoutMs);
-
-        UINT32 available = 0;
-        while (SUCCEEDED(capture->GetNextPacketSize(&available)) && available > 0) {
-            BYTE* data = nullptr;
-            UINT32 frames = 0;
-            DWORD packetFlags = 0;
-            if (FAILED(capture->GetBuffer(&data, &frames, &packetFlags, nullptr, nullptr))) break;
-
-            result.packets++;
-            result.frames += frames;
-            const bool silent = (packetFlags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
-            if (silent || !data) result.silentFrames += frames;
-
-            if (!silent && data && floatCapture) {
-                const auto* floats = reinterpret_cast<const float*>(data);
-                const size_t count = static_cast<size_t>(frames) * negotiated->nChannels;
-                samples.insert(samples.end(), floats, floats + count);
-            }
-
-            capture->ReleaseBuffer(frames);
-        }
-    }
+    CaptureWindow window = collectCapture(capture.get(), completed, options.seconds,
+        static_cast<int>(negotiated->nChannels), floatCapture, options.selfTone);
 
     tone.stop();
+    result.toneFrames = tone.framesRendered();
+    if (options.selfTone) {
+        note("self-tone", "this program rendered " + std::to_string(tone.framesRendered()) + " frames ("
+            + tone.renderStatus() + ")");
+    }
 
-    result.pcmArrived = result.packets > 0 && result.frames > result.silentFrames;
-    note("data", std::to_string(result.packets) + " packet(s), " + std::to_string(result.frames) + " frames, "
-        + std::to_string(result.silentFrames) + " frames flagged silent, format " + result.format);
+    result.packets = window.packets;
+    result.frames = window.frames;
+    result.silentFrames = window.silentFrames;
+    result.nonZeroSamples = window.stats.nonzero;
+    result.peak = window.stats.peak;
+    result.rms = window.stats.rms();
+    result.pcmArrived = window.packets > 0 && window.stats.nonzero > 0;
+    reportWindow(window, negotiated);
 
-    if (options.selfTone && !samples.empty()) {
-        result.tone = toneMagnitude(samples, static_cast<int>(negotiated->nSamplesPerSec), kToneFrequency);
+    if (options.selfTone && !window.samples.empty()) {
+        result.tone = findTone(window.samples, static_cast<int>(negotiated->nSamplesPerSec));
         note("self-tone", "1 kHz magnitude in the captured audio: " + std::to_string(result.tone)
-            + (result.tone > 0.05 ? " — the tone really was captured" : " — the tone was NOT found"));
-    } else if (!result.pcmArrived) {
-        note("data", "only silence arrived — start something that plays audio, or use --self-tone");
+            + (result.tone > 0.05 ? " - the tone really was captured" : " - the tone was NOT found"));
     }
 
     // ----------------------------------------------------------------- stage 12
+    // Everything is released here rather than at the end of the function, so that
+    // the note below describes a state that is already true.
     client->Stop();
-    note("teardown", "Stop + release, COM apartment closed; nothing was written to disk");
+    capture.reset();
+    client.reset();
+    activated.reset();
+    operation.reset();
+    handler.reset();
+    note("teardown", "the capture was stopped and every COM object released; the apartment is closed as this "
+                     "function returns - no audio was written to disk");
 
+    // The tone is treated as evidence, never as a verdict. A process loopback
+    // stream is documented to be able to leave out the audio of the process that
+    // is doing the capturing, so "the tone of the capturing process is not in the
+    // capture of the capturing process" is not a failure of the capture - it is a
+    // limitation of this particular test, and saying otherwise would send the
+    // diagnosis in the wrong direction. The check that *is* decisive is --system.
+    if (options.selfTone && result.tone <= 0.05) {
+        const uint64_t halfASecond = static_cast<uint64_t>(negotiated->nSamplesPerSec) / 2;
+        if (tone.framesRendered() < halfASecond) {
+            note("self-tone", "this program rendered nothing (or almost nothing) - the tone never reached the device, "
+                              "so the capture had nothing to take and the tone proves nothing here");
+        } else if (window.stats.nonzero == 0) {
+            note("self-tone", "the tone is not in this capture and no other audio arrived either, so this run neither "
+                              "proves nor disproves content: run --system for the control path, and --pid <player> "
+                              "while that player is really playing something");
+        } else {
+            note("self-tone", "the tone is not in this capture although the capture does carry other audio. The "
+                              "capturing process is part of the captured tree here, and its own audio is not "
+                              "guaranteed to appear in its own capture - a limitation of this test, not a failure");
+        }
+    }
+
+    if (!result.pcmArrived) {
+        note("data", "no audio arrived in the capture window - start playback in the target application, or use "
+                      "--system to check the control path");
+    }
+
+    result.succeeded = true;
+    return 0;
+}
+
+/**
+ * The control test: the same measurement on the whole system audio, through a
+ * classic WASAPI loopback stream on the default output device.
+ *
+ * Why it exists: if the tone is captured here but not through the process
+ * loopback stream, the device, the system and this program are all fine and the
+ * problem is specific to per process capture. If it is missing here as well, the
+ * audio never reached the device at all, which has nothing to do with the API.
+ */
+int runSystemLoopback(const Options& options, RunResult& result) {
+    note("mode", "whole system audio: classic WASAPI loopback on the default output device (control test)");
+
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    // Declared first so it runs last: the apartment outlives every interface below.
+    ComGuard comGuard(SUCCEEDED(com));
+    if (FAILED(com) && com != RPC_E_CHANGED_MODE) {
+        note("com", "CoInitializeEx failed: " + saf::describeHresult(static_cast<int32_t>(com)));
+        result.failureStage = "com";
+        return 1;
+    }
+    note("com", "COM initialised (multithreaded apartment)");
+
+    const std::string endpoint = defaultRenderEndpointName();
+    note("endpoint", endpoint.empty() ? "the default output device has no readable name"
+                                      : "default output: " + endpoint);
+
+    HRESULT hr = S_OK;
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    ComPtr<IMMDevice> device;
+    ComPtr<IAudioClient> client;
+    ComPtr<IAudioCaptureClient> capture;
+    WAVEFORMATEX* mix = nullptr;
+
+    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(enumerator.put()));
+    if (SUCCEEDED(hr)) hr = enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, device.put());
+    if (SUCCEEDED(hr) && device) hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, client.putVoid());
+    if (FAILED(hr) || !client) {
+        note("interface", "the default output device could not be opened: "
+            + saf::describeHresult(static_cast<int32_t>(hr)));
+        result.failureStage = "interface";
+        return 1;
+    }
+    note("interface", "IAudioClient obtained for the default output device");
+
+    hr = client->GetMixFormat(&mix);
+    if (FAILED(hr) || !mix) {
+        note("client-init", "the output mix format could not be read: "
+            + saf::describeHresult(static_cast<int32_t>(hr)));
+        result.failureStage = "client-init";
+        return 1;
+    }
+
+    EventGuard eventGuard(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+    if (!eventGuard.get()) {
+        note("com", "the synchronisation event could not be created");
+        result.failureStage = "com";
+        CoTaskMemFree(mix);
+        return 1;
+    }
+
+    hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED,
+        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK, 200000, 0, mix, nullptr);
+    if (FAILED(hr)) {
+        note("client-init", "the loopback stream could not be initialised: "
+            + saf::describeHresult(static_cast<int32_t>(hr)));
+        result.failureStage = "client-init";
+        CoTaskMemFree(mix);
+        return 1;
+    }
+    note("client-init", "loopback stream initialised: " + std::to_string(mix->nSamplesPerSec) + " Hz / "
+        + std::to_string(mix->nChannels) + " channels / " + std::to_string(mix->wBitsPerSample) + " bit");
+
+    hr = client->GetService(IID_PPV_ARGS(capture.put()));
+    if (FAILED(hr) || !capture) {
+        note("capture-client", "IAudioCaptureClient is unavailable: "
+            + saf::describeHresult(static_cast<int32_t>(hr)));
+        result.failureStage = "capture-client";
+        CoTaskMemFree(mix);
+        return 1;
+    }
+    note("capture-client", "IAudioCaptureClient obtained");
+
+    hr = client->SetEventHandle(eventGuard.get());
+    if (SUCCEEDED(hr)) hr = client->Start();
+    if (FAILED(hr)) {
+        note("capture-start", "the loopback stream did not start: "
+            + saf::describeHresult(static_cast<int32_t>(hr)));
+        result.failureStage = "capture-start";
+        CoTaskMemFree(mix);
+        return 1;
+    }
+    note("capture-start", "the loopback stream is running");
+
+    TonePlayer tone;
+    if (options.selfTone) {
+        std::string toneError;
+        if (tone.start(toneError)) {
+            note("self-tone", "playing 1 kHz from this program for the whole capture window");
+        } else {
+            note("self-tone", "could not play the tone: " + toneError);
+        }
+    }
+
+    const bool floatData = mix->wBitsPerSample == 32;
+    CaptureWindow window = collectCapture(capture.get(), eventGuard.get(), options.seconds,
+        static_cast<int>(mix->nChannels), floatData, options.selfTone);
+
+    tone.stop();
+    const int rate = static_cast<int>(mix->nSamplesPerSec);
+    result.toneFrames = tone.framesRendered();
+    result.packets = window.packets;
+    result.frames = window.frames;
+    result.silentFrames = window.silentFrames;
+    result.nonZeroSamples = window.stats.nonzero;
+    result.peak = window.stats.peak;
+    result.rms = window.stats.rms();
+    result.pcmArrived = window.packets > 0 && window.stats.nonzero > 0;
+    result.format = std::to_string(mix->nSamplesPerSec) + " Hz / " + std::to_string(mix->nChannels) + " channels / "
+        + std::to_string(mix->wBitsPerSample) + " bit (device mix format)";
+    if (options.selfTone) {
+        note("self-tone", "this program rendered " + std::to_string(tone.framesRendered()) + " frames ("
+            + tone.renderStatus() + ")");
+    }
+    reportWindow(window, mix);
+
+    if (options.selfTone) {
+        result.tone = findTone(window.samples, rate);
+        note("self-tone", "1 kHz magnitude in the system audio: " + std::to_string(result.tone)
+            + (result.tone > 0.05 ? " - the tone is really there" : " - the tone is NOT there"));
+    }
+
+    client->Stop();
+    CoTaskMemFree(mix);
+    capture.reset();
+    client.reset();
+    device.reset();
+    enumerator.reset();
+    note("teardown", "the capture was stopped and every COM object released; the apartment is closed as this "
+                     "function returns - no audio was written to disk");
 
     if (options.selfTone && result.tone <= 0.05) {
+        // In this mode the tone has to come back: it is played into the same device
+        // that the control stream captures. If it does not, the audio never reached
+        // the device, and that is a real answer to a real question.
         result.failureStage = "self-tone";
-        result.failureText = "the tone that this process played was not found in the capture";
+        result.failureText = tone.framesRendered() < static_cast<uint64_t>(rate)
+            ? "this program could not render the tone at all, so the control test proves nothing"
+            : "the tone was rendered but is not in the system audio: the audio never reached the device";
         return 1;
     }
 
@@ -688,13 +1066,24 @@ void printUsage() {
     std::printf(
         "StreamAudioFilter process loopback probe\n\n"
         "  --list                 list running processes (pid, name)\n"
+        "  --playing              list the processes that are playing audio right now\n"
         "  --pid <n>              capture this process tree\n"
         "  --process <name.exe>   capture the first process with this image name\n"
         "  --self-tone            play 1 kHz from this program and look for it in the capture\n"
+        "  --system               capture whole system audio instead (the control test)\n"
         "  --exclude              capture everything *except* the target tree\n"
         "  --seconds <n>          how long to capture (default 5)\n"
         "  --json                 machine readable result\n\n"
-        "Nothing is installed, no setting is changed and no audio is written to disk.\n");
+        "Nothing is installed, no setting is changed and no audio is written to disk.\n"
+        "\nHow to read the result:\n"
+        "  frames arriving   the stream exists; the number that says whether audio is in it is the\n"
+        "                    count of non-zero samples. peak 0.000000 means the stream carries silence,\n"
+        "                    which is not the same as a failed capture.\n"
+        "  --self-tone       the only check of the content: this program plays 1 kHz and looks for it in\n"
+        "                    the capture. When it is missing the report says whether the tone was even\n"
+        "                    rendered, so the capture is never blamed for a source that stayed silent.\n"
+        "  --system          the control. If the tone is missing there too, the audio never reached the\n"
+        "                    device, which has nothing to do with per process capture.\n");
 }
 
 } // namespace
@@ -708,6 +1097,10 @@ int main(int argc, char** argv) {
 
         if (arg == "--list") {
             options.list = true;
+        } else if (arg == "--playing") {
+            options.playing = true;
+        } else if (arg == "--system") {
+            options.system = true;
         } else if (arg == "--pid" && hasNext) {
             options.pid = static_cast<DWORD>(std::strtoul(argv[++i], nullptr, 10));
         } else if (arg == "--process" && hasNext) {
@@ -734,6 +1127,11 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (options.playing) {
+        listPlayingProcesses();
+        return 0;
+    }
+
     if (options.list) {
         for (const ProcessEntry& entry : processList()) {
             if (entry.pid == 0) continue;
@@ -743,24 +1141,40 @@ int main(int argc, char** argv) {
     }
 
     if (!g_json) {
-        std::printf("StreamAudioFilter — standalone WASAPI process loopback probe\n");
+        std::printf("StreamAudioFilter - standalone WASAPI process loopback probe\n");
         std::printf("no installation, no settings changed, no audio written to disk\n\n");
     }
 
     RunResult result;
-    const int status = runProbe(options, result);
+    const int status = options.system ? runSystemLoopback(options, result) : runProbe(options, result);
 
     if (g_json) {
         std::printf("{\"ok\": %s, \"pcmArrived\": %s, \"toneMagnitude\": %.4f, \"packets\": %d, \"frames\": %llu, "
-                    "\"silentFrames\": %llu, \"format\": \"%s\", \"failureStage\": \"%s\", \"failure\": \"%s\", "
-                    "\"failures\": %d}\n",
+                    "\"silentFrames\": %llu, \"nonZeroSamples\": %llu, \"peak\": %.6f, \"rms\": %.6f, "
+                    "\"format\": \"%s\", \"failureStage\": \"%s\", \"failure\": \"%s\", \"failures\": %d}\n",
             status == 0 ? "true" : "false", result.pcmArrived ? "true" : "false", result.tone, result.packets,
             static_cast<unsigned long long>(result.frames), static_cast<unsigned long long>(result.silentFrames),
+            static_cast<unsigned long long>(result.nonZeroSamples), result.peak, result.rms,
             jsonEscape(result.format).c_str(), jsonEscape(result.failureStage).c_str(),
             jsonEscape(result.failureText).c_str(), g_failures);
     } else {
-        std::printf("\nverdict: %s\n", status == 0 ? "the process loopback capture works on this system"
-                                                   : "the capture failed — the stage above names the cause");
+        if (options.system) {
+            std::printf("\nverdict: %s\n", status == 0
+                    ? "the whole system audio loopback works on this system (control test passed)"
+                    : "the control test failed - see the stage above");
+        } else if (status != 0) {
+            std::printf("\nverdict: the capture did not work - the stage above names the cause\n");
+        } else if (result.nonZeroSamples > 0) {
+            std::printf("\nverdict: the process loopback capture works on this system: %llu non-zero samples "
+                        "(peak %.6f)\n", static_cast<unsigned long long>(result.nonZeroSamples), result.peak);
+            if (options.selfTone && result.tone <= 0.05 && result.toneFrames > 0) {
+                std::printf("         (the 1 kHz tone of this program was not part of it - see the self-tone lines:\n"
+                            "          that is a limitation of the test, not a failure of the capture)\n");
+            }
+        } else {
+            std::printf("\nverdict: the capture stream itself works on this system, but the target produced no "
+                        "audio during the test - start playback in it and run the probe again\n");
+        }
     }
 
     return status;
