@@ -347,6 +347,23 @@ bool defaultMixFormat(WAVEFORMATEX** format) {
 
 namespace {
 
+/**
+ * Minimum build that is known to implement process loopback.
+ *
+ * Microsoft documents the API as "Windows 10 Build 20348" (Server 2022), which
+ * is the build the public contract was written against. In practice the audio
+ * engine side has been present since Windows 10 version 2004 (build 19041):
+ * that is the build OBS requires for its "Application Audio Capture" source and
+ * the build every third party process loopback implementation relies on.
+ *
+ * Because both statements can only be *verified* by asking the operating
+ * system, nothing below decides by version number: the walk performs a real
+ * activation and reports the HRESULT of the stage that failed. The build number
+ * is context for the user, never the verdict.
+ */
+constexpr uint32_t kProcessLoopbackSinceBuild = 19041;  // Windows 10, version 2004
+constexpr uint32_t kDocumentedBuild = 20348;            // Windows Server 2022 / Windows 11 SDK
+
 // Every step of the walk below is bounded: a diagnostics call has to return.
 constexpr DWORD kProbeActivationTimeoutMs = 5000;  // wait for ActivateCompleted
 constexpr DWORD kProbePacketTimeoutMs = 150;       // wait for a capture packet

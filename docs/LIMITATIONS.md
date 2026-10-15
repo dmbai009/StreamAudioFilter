@@ -53,6 +53,53 @@ Because the documentation and reality disagree, what decides is **not the build 
 activation attempt**: the plugin performs it and shows the result (or the `HRESULT` with an
 explanation).
 
+### 0x8000000E (`E_ILLEGAL_METHOD_CALL`) is not a version problem
+
+The plugin used to fail on Windows 10 19045 with
+
+```
+0x8000000E — Метод вызван в неожиданное время
+```
+
+`0x8000000E` is `E_ILLEGAL_METHOD_CALL`, and `ActivateAudioInterfaceAsync` is documented to return it
+when the caller hands it a completion handler that is not an **agile object** (one that implements
+`IAgileObject`, or aggregates the free threaded marshaler):
+
+> *"The `completionHandler` that is passed into `ActivateAudioInterfaceAsync` needs to implement
+> `IAgileObject` to ensure that there is no deadlock when the completionHandler is called from the MTA.
+> Otherwise, an `E_ILLEGAL_METHOD_CALL` will occur."*
+> (<https://learn.microsoft.com/en-us/windows/win32/api/mmdeviceapi/nf-mmdeviceapi-activateaudiointerfaceasync>)
+
+Windows calls `ActivateCompleted` from a worker thread of the multi threaded apartment, whichever
+apartment the caller is in, so the handler has to be usable from any apartment. The call fails
+**before** the audio engine looks at the process, the format or the build number — which is why this
+code must never be shown as "your Windows version does not support process loopback".
+
+That was a bug in this plugin: `native/src/win/com_ptr.h` now answers `IAgileObject` for every callback
+the plugin passes to COM (`ComCallback`), the probe below proves it on the real machine, and the failure
+is reported with its stage instead of as a single error:
+
+```
+[activation-call] ActivateAudioInterfaceAsync was refused: E_ILLEGAL_METHOD_CALL (0x8000000E)
+  what it means: ... it must never be reported as "this Windows version is unsupported".
+  the system says: Метод вызван в неожиданное время
+```
+
+The free threaded marshaler variant of the documented cure is deliberately *not* used: aggregating
+`CLSID_FreeThreadedMarshaler` makes the marshaler hold a reference to the object, and the object holds
+the marshaler — a reference cycle that would leak one callback object per activation, and one activation
+happens per captured application and per restart.
+
+Checking a specific machine without Discord: **`process-loopback-probe.exe`**
+
+The repository also ships a standalone probe (built by CI, attached to every release, documented in
+[PROBE.md](PROBE.md)). It performs the same activation with the same agile handler, prints every stage
+— COM apartment, handler agility, the activation call, the callback, `GetActivateResult`,
+`QueryInterface`, format negotiation, `Start`, the packets themselves, the teardown — and can play a
+1 kHz tone from its own process to show that PCM really arrives. It writes nothing to disk, installs
+nothing and changes no setting; it is the fastest way to tell whether a machine supports the capture
+and, when it does not, which step is responsible.
+
 Checking your own build with one command (PowerShell):
 
 ```powershell
