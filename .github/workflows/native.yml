@@ -130,6 +130,36 @@ jobs:
 
           test -f native/build/Release/streamaudiofilter.node
 
+      # The standalone probe is what a user runs when the plugin reports a
+      # failure: it activates the same process loopback capture, with the same
+      # agile completion handler, without Discord. It is built and shipped by CI
+      # so that no user needs a compiler to get a diagnosis.
+      - name: Build the standalone process loopback probe (cl.exe)
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSINSTALL=%%i
+          call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul
+          if not exist build\probe mkdir build\probe
+          cl /nologo /std:c++17 /EHsc /W4 /D_USE_MATH_DEFINES /DNOMINMAX /DWIN32_LEAN_AND_MEAN /Fo:build\probe\ ^
+             /Fe:build\probe\process-loopback-probe.exe ^
+             tools\process_loopback_probe\main.cc src\hr_advice.cc ^
+             /link ole32.lib oleaut32.lib uuid.lib mmdevapi.lib
+          if errorlevel 1 exit /b 1
+          if not exist build\probe\process-loopback-probe.exe exit /b 1
+          build\probe\process-loopback-probe.exe --help
+          if errorlevel 1 exit /b 1
+
+      - name: Probe smoke test (help and process list only)
+        shell: cmd
+        run: |
+          rem The probe itself is NOT run against a live capture here: a headless
+          rem runner has no audio endpoint, which would turn a guaranteed silence
+          rem into a false failure. It is compiled and invoked in its usage path,
+          rem and the user runs it on a real machine (docs/PROBE.md).
+          build\probe\process-loopback-probe.exe --list >nul
+          if errorlevel 1 exit /b 1
+          echo the probe starts and enumerates processes
+
       - name: Portable tests compiled and run by cl.exe
         shell: cmd
         run: |
@@ -142,7 +172,7 @@ jobs:
           cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\dsp_tests.exe /Fo:build\msvc\ test\dsp_tests.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc > ..\ci-out\msvc-tests.log 2>&1
           if errorlevel 1 exit /b 1
 
-          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\engine_tests.exe /Fo:build\msvc\ test\engine_tests.cc src\app_identity.cc src\capture_group.cc src\engine.cc src\mock\mock_backend.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc >> ..\ci-out\msvc-tests.log 2>&1
+          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\engine_tests.exe /Fo:build\msvc\ test\engine_tests.cc src\app_identity.cc src\capture_group.cc src\engine.cc src\hr_advice.cc src\mock\mock_backend.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc >> ..\ci-out\msvc-tests.log 2>&1
           if errorlevel 1 exit /b 1
 
           build\msvc\dsp_tests.exe >> ..\ci-out\msvc-tests.log 2>&1
@@ -172,6 +202,14 @@ jobs:
         with:
           name: streamaudiofilter-node-windows-x64
           path: native/build/Release/streamaudiofilter.node
+          if-no-files-found: warn
+
+      - name: Upload probe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamaudiofilter-probe-windows-x64
+          path: native/build/probe/process-loopback-probe.exe
           if-no-files-found: warn
 
       - name: Publish logs
