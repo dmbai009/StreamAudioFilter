@@ -36,10 +36,8 @@ on:
 
 env:
   # pnpm refuses to replace an existing node_modules directory without a TTY
-  # unless it knows it is in CI, and corepack asks before downloading the pnpm
-  # version Vencord pins. Neither question can be answered here.
+  # unless it knows it is in CI, and a runner has no TTY to answer that.
   CI: "true"
-  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
 
   # The Vencord release the bundle is built from. The bundle switches Vencord's
   # own updater off on purpose (see the build step), so this pin is what users
@@ -52,11 +50,11 @@ jobs:
     name: Vencord + plugin (no build on the user's machine)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
 
       # Cheap, and it answers "is there room / what tools are these" before any
       # of it can matter.
@@ -70,7 +68,7 @@ jobs:
           bash --version | head -1
           SCRIPT
 
-      - name: Fetch Vencord ${{ env.VENCORD_REF }}
+      - name: Fetch Vencord ${{ env.VENCORD_REF }} and the pnpm it pins
         run: |
           bash .github/ci/step.sh "Fetch Vencord" <<'SCRIPT'
           set -euo pipefail
@@ -78,10 +76,31 @@ jobs:
           rm -rf "$vencord_dir"
           git clone --depth 1 --branch "$VENCORD_REF" https://github.com/Vencord/Vencord "$vencord_dir"
           test -f "$vencord_dir/package.json"
-          echo "VENCORD_DIR=$vencord_dir" >> "$GITHUB_ENV"
-          echo "VENCORD_COMMIT=$(git -C "$vencord_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "Vencord ref $VENCORD_REF at $(git -C "$vencord_dir" rev-parse --short HEAD)"
+
+          # The pnpm version is the one Vencord pins for itself: its own release
+          # job installs pnpm from this very field, and this bundle must be built
+          # with the same toolchain as the official distribution.
+          pnpm_version="$(node -e 'console.log(require(process.argv[1]).packageManager.replace(/^pnpm@/, ""))' "$vencord_dir/package.json")"
+          test -n "$pnpm_version"
+
+          {
+              echo "VENCORD_DIR=$vencord_dir"
+              echo "VENCORD_COMMIT=$(git -C "$vencord_dir" rev-parse HEAD)"
+              echo "PNPM_VERSION=$pnpm_version"
+          } >> "$GITHUB_ENV"
+          echo "Vencord $VENCORD_REF at $(git -C "$vencord_dir" rev-parse --short HEAD), pnpm $pnpm_version"
           du -sh "$vencord_dir"
+          SCRIPT
+
+      # Installed by npm from the version read above, so that no third party
+      # action and no corepack (on its way out of Node) is involved, and the pin
+      # stays Vencord's own.
+      - name: pnpm ${{ env.PNPM_VERSION }}
+        run: |
+          .github/ci/step.sh "Install pnpm" <<'SCRIPT'
+          set -euo pipefail
+          npm install --global "pnpm@$PNPM_VERSION"
+          pnpm --version
           SCRIPT
 
       - name: Vencord dependencies
@@ -89,12 +108,12 @@ jobs:
           bash .github/ci/step.sh "Vencord dependencies" <<'SCRIPT'
           set -euo pipefail
           cd "$VENCORD_DIR"
-          corepack enable
           pnpm install --frozen-lockfile
           # Checked explicitly: an install that silently did nothing would fail
-          # much later with a confusing error.
+          # much later with a confusing error. Both of these are devDependencies
+          # of Vencord and must exist for the build below.
           test -x node_modules/.bin/esbuild
-          test -d node_modules/react
+          test -d node_modules/typescript
           echo "packages: $(ls node_modules | wc -l), size: $(du -sh node_modules | cut -f1)"
           SCRIPT
 
