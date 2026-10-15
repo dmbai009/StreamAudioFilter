@@ -11,9 +11,10 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 #
 # Common variants:
-#   ... -Prebuilt v0.1.0                                   no build at all (no Node.js either)
+#   ... -Prebuilt latest                                   no build at all (no Node.js either)
+#   ... -Prebuilt v0.1.1                                   the same, pinned to one release
 #   ... -AddonPath C:\Downloads\streamaudiofilter.node     use a prebuilt addon
-#   ... -DownloadAddon v0.1.0                              fetch it from the GitHub release
+#   ... -DownloadAddon latest                              fetch it from the newest release
 #   ... -BuildAddon                                        compile it here (needs VS Build Tools)
 #   ... -Update                                            refresh Vencord and rebuild
 #   ... -Reinject                                          Discord updated: patch it again
@@ -38,13 +39,13 @@ param(
     [switch] $Reinject,
 
     # Install without building anything: download the prebuilt Vencord + plugin
-    # archive of that release tag (e.g. v0.1.0). Needs no Node.js, no compiler,
+    # archive of that release (a tag, or "latest"). Needs no Node.js, no compiler,
     # no git -- just PowerShell and an internet connection.
     [string] $Prebuilt = "",
 
     # Where the native addon comes from: all optional, at most one is used.
     [string] $AddonPath = "",
-    [string] $DownloadAddon = "",   # a release tag, e.g. v0.1.0
+    [string] $DownloadAddon = "",   # a release tag, or "latest"
     [switch] $BuildAddon,
 
     # Skip `pnpm install` (only useful when node_modules is already complete).
@@ -182,6 +183,14 @@ function Test-AddonFile($path) {
     return ""
 }
 
+# "latest" means the newest published release; any other value is a tag.
+function Get-ReleaseUrl($tag, $asset) {
+    if ($tag -eq "latest") {
+        return "$RepoUrl/releases/latest/download/$asset"
+    }
+    return "$RepoUrl/releases/download/$tag/$asset"
+}
+
 function Install-Addon($source) {
     $problem = Test-AddonFile $source
     if ($problem) {
@@ -250,11 +259,11 @@ function Install-Prebuilt($tag) {
     Write-Head "Prebuilt bundle ($tag)"
     Write-Info "This route needs no Node.js, no compiler and no git."
 
-    $bundleUrl = "$RepoUrl/releases/download/$tag/$bundleName"
-    $addonUrl = "$RepoUrl/releases/download/$tag/$AddonName"
+    $bundleUrl = Get-ReleaseUrl $tag $bundleName
+    $addonUrl = Get-ReleaseUrl $tag $AddonName
     Write-Info "download: $bundleUrl"
     Write-Info "          $addonUrl"
-    Write-Info "(both built by CI for the tag $tag; the release page lists their SHA-256)"
+    Write-Info "(both built by CI for release '$tag'; the release page lists their SHA-256)"
     if (-not (Confirm "Download the prebuilt Vencord and the native addon now?")) {
         Fail "Nothing to install without them. The files can also be downloaded by hand from $RepoUrl/releases."
     }
@@ -520,9 +529,9 @@ if ($AddonPath) {
     Write-Info "using the file passed with -AddonPath"
     Install-Addon $AddonPath
 } elseif ($DownloadAddon) {
-    $url = "$RepoUrl/releases/download/$DownloadAddon/$AddonName"
+    $url = Get-ReleaseUrl $DownloadAddon $AddonName
     Write-Info "download: $url"
-    Write-Info "(built by CI from the tag $DownloadAddon; the release page lists its SHA-256)"
+    Write-Info "(built by CI for release '$DownloadAddon'; the release page lists its SHA-256)"
     if (-not (Confirm "Download the prebuilt addon from GitHub?")) {
         $skipAddon = $true
     } else {
@@ -549,7 +558,7 @@ if ($skipAddon) {
     Write-Note "with filtering on it removes the share audio and explains why (fail closed)."
     Write-Note "Add it later in any of these ways:"
     Write-Note "  * copy $AddonName to  $AddonDir"
-    Write-Note "  * re-run this script with  -DownloadAddon v0.1.0"
+    Write-Note "  * re-run this script with  -DownloadAddon latest"
     Write-Note "  * re-run this script with  -BuildAddon"
 }
 

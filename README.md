@@ -121,10 +121,10 @@ to compile:
 
 ```powershell
 # A: build it here (one command, keeps Vencord's own updater working)
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -DownloadAddon v0.1.0
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -DownloadAddon latest
 
 # B: no build at all, no Node.js needed (Vencord's updater is off in that bundle)
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Prebuilt v0.1.0
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Prebuilt latest
 ```
 
 Route A checks Node.js, gets the Vencord source, copies the plugin into `src\userplugins`, installs
