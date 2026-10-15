@@ -1,3 +1,5 @@
-1 Error(s)
-C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\shared\ksmedia.h(18,1): error C1189: #error:  KS.H must be included before KSMEDIA.H [D:\a\StreamAudioFilter\StreamAudioFilter\native\build\streamaudiofilter.vcxproj]
+3 Error(s)
+C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um\verrsrc.h(147,16): error C2011: 'tagVS_FIXEDFILEINFO': 'struct' type redefinition [D:\a\StreamAudioFilter\StreamAudioFilter\native\build\streamaudiofilter.vcxproj]
+D:\a\StreamAudioFilter\StreamAudioFilter\native\src\win\windows_util.cc(221,9): error C3861: 'GetApplicationUserModelId': identifier not found [D:\a\StreamAudioFilter\StreamAudioFilter\native\build\streamaudiofilter.vcxproj]
+D:\a\StreamAudioFilter\StreamAudioFilter\native\src\win\windows_util.cc(223,13): error C3861: 'GetApplicationUserModelId': identifier not found [D:\a\StreamAudioFilter\StreamAudioFilter\native\build\streamaudiofilter.vcxproj]
 gyp ERR! stack Error: `C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\Bin\MSBuild.exe` failed with exit code: 1
