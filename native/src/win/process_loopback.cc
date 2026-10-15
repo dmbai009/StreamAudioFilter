@@ -289,11 +289,15 @@ private:
 
     void copyMixFormat(const WAVEFORMATEX* format) {
         captured = audioFormatFrom(format);
-        needsConversion_ = !(captured.channels == request_.channels && captured.sampleRate == request_.sampleRate
+        // AudioFormat stores unsigned counts, the capture request uses ints.
+        const uint32_t requestRate = static_cast<uint32_t>(request_.sampleRate);
+        const uint16_t requestChannels = static_cast<uint16_t>(request_.channels);
+
+        needsConversion_ = !(captured.channels == requestChannels && captured.sampleRate == requestRate
             && captured.sample == SampleFormat::IeeeFloat32);
 
-        if (captured.sampleRate != request_.sampleRate) {
-            resampler_ = std::make_unique<SincResampler>(captured.sampleRate, request_.sampleRate, request_.channels);
+        if (captured.sampleRate != requestRate) {
+            resampler_ = std::make_unique<SincResampler>(static_cast<int>(captured.sampleRate), request_.sampleRate, request_.channels);
         }
 
         // Buffers for the conversion path.

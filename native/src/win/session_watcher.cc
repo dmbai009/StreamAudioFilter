@@ -14,6 +14,7 @@
 //    callbacks are delivered on the COM apartment that registered them.
 
 #include <audiopolicy.h>
+#include <endpointvolume.h>
 #include <mmdeviceapi.h>
 #include <windows.h>
 
