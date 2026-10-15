@@ -456,6 +456,48 @@ static void testPacketMeasure() {
     CHECK(shortWindow >= 0.0, "a very short window does not produce nonsense, got %f", shortWindow);
     CHECK(saf::dsp::toneMagnitude(nullptr, 0, rate, 1000.0) == 0.0, "no samples, no tone");
     CHECK(saf::dsp::toneMagnitude(tone.data(), tone.size(), 0, 1000.0) == 0.0, "no sample rate, no tone");
+
+    // --- interleaved channels: the search has to downmix first, or a 1 kHz tone in
+    //     a stereo capture reads as 2 kHz and is not found at all. This is the bug
+    //     the first real probe runs on Windows 10 19045 walked into (a tone that was
+    //     in the audio was reported as missing).
+    std::vector<float> stereo;
+    stereo.reserve(tone.size() * 2);
+    for (float sample : tone) {
+        stereo.push_back(sample);
+        stereo.push_back(sample);
+    }
+    const double stereoFound = saf::dsp::toneMagnitude(stereo.data(), stereo.size(), rate, 1000.0, 2);
+    CHECK(stereoFound > 0.15, "a stereo 1 kHz tone is found with channels=2, got %f", stereoFound);
+    CHECK(stereoFound < 0.25, "the stereo magnitude is still the amplitude, got %f", stereoFound);
+
+    const double stereoAsMono = saf::dsp::toneMagnitude(stereo.data(), stereo.size(), rate, 1000.0, 1);
+    CHECK(stereoAsMono < 0.02, "the same stereo data read as mono does not find 1 kHz - that is the bug, got %f",
+          stereoAsMono);
+    const double stereoAtHalf = saf::dsp::toneMagnitude(stereo.data(), stereo.size(), rate, 500.0, 1);
+    CHECK(stereoAtHalf > 0.15, "read as mono, every sample is doubled and the tone lands at half the frequency, got %f",
+          stereoAtHalf);
+
+    // A tone in one channel of two is halved by the downmix, not lost.
+    std::vector<float> leftOnly(tone.size() * 2, 0.0f);
+    for (size_t i = 0; i < tone.size(); i++) leftOnly[i * 2] = tone[i];
+    const double halfAmplitude = saf::dsp::toneMagnitude(leftOnly.data(), leftOnly.size(), rate, 1000.0, 2);
+    CHECK(halfAmplitude > 0.08, "a tone in one channel of two is still found, got %f", halfAmplitude);
+    CHECK(halfAmplitude < 0.12, "and it reads about half the amplitude, got %f", halfAmplitude);
+
+    std::vector<float> quad;
+    quad.reserve(tone.size() * 4);
+    for (float sample : tone) {
+        for (int channel = 0; channel < 4; channel++) quad.push_back(sample);
+    }
+    const double quadFound = saf::dsp::toneMagnitude(quad.data(), quad.size(), rate, 1000.0, 4);
+    CHECK(quadFound > 0.15, "a 4 channel 1 kHz tone is found with channels=4, got %f", quadFound);
+
+    CHECK(saf::dsp::toneMagnitude(stereo.data(), stereo.size(), rate, 1000.0, 0) < 0.02,
+          "a nonsense channel count falls back to mono instead of reading past the buffer, got %f",
+          saf::dsp::toneMagnitude(stereo.data(), stereo.size(), rate, 1000.0, 0));
+    CHECK(saf::dsp::toneMagnitude(tone.data(), 3, rate, 1000.0, 8) == 0.0,
+          "a buffer shorter than one frame has no tone");
 }
 
 // ------------------------------------------------------------------- main

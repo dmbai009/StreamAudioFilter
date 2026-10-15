@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace saf::dsp {
 
@@ -67,29 +68,59 @@ inline void measureInt16(const int16_t* values, size_t count, SampleStats& stats
 }
 
 /**
- * Goertzel: how much of @p frequency is inside @p count interleaved samples.
+ * Goertzel: how much of @p frequency is inside the interleaved samples.
+ *
+ * @p count counts interleaved samples, @p channels says how many of them form one
+ * frame, and the search runs on the mono downmix at @p sampleRate. The channel
+ * count is not an optimisation, it is the difference between a working search and
+ * a broken one: reading interleaved stereo as if it were mono doubles every sample,
+ * which moves a 1 kHz tone to 500 Hz, so a search at 1 kHz finds nothing at all
+ * (measured with this very function: 0.1999 at 500 Hz, 0.0000 at 1 kHz). The first
+ * real probe runs on Windows 10 19045 did exactly that and reported 0.000025 for a
+ * tone that was in the captured audio - a measurement bug that looked like a
+ * capture problem.
  *
  * Normalised so that the result is the amplitude of that frequency: a pure sine
- * of amplitude 0.2 reads about 0.2, and an unrelated signal (or silence) reads
- * near zero. The standalone probe uses 0.05 as "the tone is there", which is a
- * quarter of the amplitude it plays.
+ * of amplitude 0.2 reads about 0.2 (about 0.1 when it occupies one channel of
+ * two), and an unrelated signal (or silence) reads near zero. The standalone probe
+ * uses 0.05 as "the tone is there", which is a quarter of the amplitude it plays.
  */
-inline double toneMagnitude(const float* samples, size_t count, int sampleRate, double frequency) {
+inline double toneMagnitude(const float* samples, size_t count, int sampleRate, double frequency,
+    int channels = 1) {
     if (!samples || count == 0 || sampleRate <= 0) return 0.0;
+    if (channels < 1) channels = 1;
+
+    const size_t mono = count / static_cast<size_t>(channels);
+    if (mono == 0) return 0.0;
+
+    std::vector<float> downmix;
+    const float* search = samples;
+    if (channels > 1) {
+        downmix.resize(mono);
+        for (size_t frame = 0; frame < mono; frame++) {
+            double sum = 0.0;
+            for (int channel = 0; channel < channels; channel++) {
+                sum += static_cast<double>(samples[frame * static_cast<size_t>(channels)
+                    + static_cast<size_t>(channel)]);
+            }
+            downmix[frame] = static_cast<float>(sum / static_cast<double>(channels));
+        }
+        search = downmix.data();
+    }
 
     const double omega = 2.0 * 3.14159265358979323846 * frequency / static_cast<double>(sampleRate);
     const double coefficient = 2.0 * std::cos(omega);
 
     double s1 = 0.0;
     double s2 = 0.0;
-    for (size_t i = 0; i < count; i++) {
-        const double s0 = static_cast<double>(samples[i]) + coefficient * s1 - s2;
+    for (size_t i = 0; i < mono; i++) {
+        const double s0 = static_cast<double>(search[i]) + coefficient * s1 - s2;
         s2 = s1;
         s1 = s0;
     }
 
     const double power = s1 * s1 + s2 * s2 - coefficient * s1 * s2;
-    return 2.0 * std::sqrt(power < 0.0 ? 0.0 : power) / static_cast<double>(count);
+    return 2.0 * std::sqrt(power < 0.0 ? 0.0 : power) / static_cast<double>(mono);
 }
 
 } // namespace saf::dsp
