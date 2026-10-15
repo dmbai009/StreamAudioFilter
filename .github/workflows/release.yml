@@ -1,0 +1,125 @@
+name: Release
+
+# Publishing is driven by a tag, never by a developer machine: the binary that
+# reaches users is the one this run built, after the same gates as a normal
+# commit (portable DSP + engine tests, TypeScript tests, MSVC build and the tests
+# compiled by cl.exe). If any of them fails, no release is created.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (must already exist, e.g. v0.1.0)"
+        required: true
+
+jobs:
+  # Reuses the gate workflow so a release can never be built from code that a
+  # commit build would have rejected.
+  gate:
+    name: Build and test
+    permissions:
+      contents: write
+    uses: ./.github/workflows/native.yml
+
+  publish:
+    name: Publish the Windows addon
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the addon built by the gate
+        uses: actions/download-artifact@v4
+        with:
+          name: streamaudiofilter-node-windows-x64
+          path: dist
+
+      - name: Verify, checksum and describe the asset
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+
+          cd dist
+          test -f streamaudiofilter.node
+          ls -l streamaudiofilter.node
+          sha256sum streamaudiofilter.node | tee SHA256SUMS.txt
+
+      - name: Write the install note
+        run: |
+          set -euo pipefail
+          cat > INSTALL.txt <<'EOF'
+          StreamAudioFilter — native audio core for Windows x64
+          =====================================================
+
+          What this file is
+          -----------------
+          streamaudiofilter.node is the compiled audio engine of the
+          StreamAudioFilter Vencord plugin. The plugin ships without it so that
+          the repository stays free of binaries; it is built by CI from the exact
+          commit this release points to (MSVC, node-gyp, C++17).
+
+          Where to put it
+          ---------------
+            %APPDATA%\Vencord\streamAudioFilter\native\streamaudiofilter.node
+
+          The folder is created by the plugin on first start. Alternatively run
+          scripts\build-native.ps1 from the repository: it needs Node.js and the
+          MSVC build tools and downloads nothing.
+
+          Requirements
+          ------------
+            * Windows 10 x64 build 19041 (2004) or newer, or Windows 11.
+              Process loopback is activated for real at runtime and the reported
+              HRESULT is what the plugin shows; versions below build 19041 have
+              no such API at all.
+            * Discord Desktop with Vencord injected into it. Vesktop and the
+              browser client are not supported.
+            * No administrator rights, no virtual audio device, no change to any
+              Windows or Discord audio setting. The filter only replaces the
+              audio track of the screen share.
+
+          Verify the download
+          -------------------
+            certutil -hashfile streamaudiofilter.node SHA256
+          and compare it with SHA256SUMS.txt. Both files come from this release.
+          EOF
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd dist
+          if gh release view "$TAG" >/dev/null 2>&1; then
+              gh release upload "$TAG" streamaudiofilter.node SHA256SUMS.txt INSTALL.txt --clobber
+          else
+              gh release create "$TAG" \
+                  streamaudiofilter.node SHA256SUMS.txt INSTALL.txt \
+                  --title "StreamAudioFilter $TAG" \
+                  --notes-file - \
+                  --verify-tag <<EOF
+          Native audio core of the StreamAudioFilter Vencord plugin, built by CI
+          from the tag \`$TAG\` (commit \`${GITHUB_SHA:0:7}\`) on a Windows runner.
+
+          **Install:** copy \`streamaudiofilter.node\` to
+          \`%APPDATA%\\Vencord\\streamAudioFilter\\native\\\`. See \`INSTALL.txt\`
+          inside the assets for the checksum and the requirements.
+
+          **Gates this build passed:** portable DSP and engine tests (\`g++\`),
+          TypeScript rule/interceptor tests, MSVC build, and the same portable
+          tests compiled and executed by \`cl.exe\` on Windows.
+
+          What it does: the plugin lets you choose which applications the viewers
+          of a screen share hear, by building its own mix of their audio and
+          handing it to Discord as the share's audio track. Nobody else's audio
+          is touched — the microphone, the voice call, the local playback and
+          every Windows/Discord audio setting stay exactly as they were. If the
+          filtering can not run, the share is left without audio instead of
+          quietly sending everything (see the fail closed section of
+          \`docs/LIMITATIONS.md\`).
+          EOF
+          fi
+          gh release view "$TAG"
