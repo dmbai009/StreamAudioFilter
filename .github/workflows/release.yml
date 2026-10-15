@@ -110,7 +110,14 @@ jobs:
           call, the local playback and every Windows or Discord audio setting stay exactly as
           they were. If the filtering cannot run, the share is left without audio instead of
           quietly sending everything (see the fail closed section of docs/LIMITATIONS.md).
+
+          The file is built from source by this run; the checksum below is the one
+          of the asset in this release.
           EOF
+
+          hash=$(sha256sum dist/streamaudiofilter.node | cut -d' ' -f1)
+          printf '\n**SHA-256 of streamaudiofilter.node:**\n\n    %s\n' "$hash" >> /tmp/RELEASE-NOTES.md
+          echo "::notice title=SHA-256 of streamaudiofilter.node::$hash"
 
       - name: Publish
         run: |
@@ -128,6 +135,16 @@ jobs:
                   --title "StreamAudioFilter $TAG" \
                   --notes-file /tmp/RELEASE-NOTES.md \
                   --verify-tag >/tmp/publish.log 2>&1 || status=$?
+          fi
+
+          if [ "$status" -eq 0 ]; then
+              # The notes are edited, not just attached, so that rerunning this
+              # job refreshes the checksum they quote.
+              gh release edit "$TAG" --notes-file /tmp/RELEASE-NOTES.md >/tmp/edit.log 2>&1 || {
+                  cat /tmp/edit.log
+                  echo "::error title=gh could not update the release notes::$(tr -d '\r' </tmp/edit.log | tr '\n' '|' | tail -c 600)"
+                  exit 1
+              }
           fi
 
           if [ "$status" -ne 0 ]; then
