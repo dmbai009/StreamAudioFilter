@@ -4,13 +4,16 @@
 // Strings, HRESULT diagnostics, OS version, process metadata and the capability
 // probe. No audio streaming happens here.
 
+// <windows.h> must come first: the audio platform headers and <appmodel.h> both
+// build on the macros it defines (WINBASEAPI, DECLSPEC_IMPORT, ...).
+#include <windows.h>
+
 #include <appmodel.h>
 #include <audioclient.h>
 #include <audioclientactivationparams.h>
 #include <mmdeviceapi.h>
 #include <propidl.h>
 #include <tlhelp32.h>
-#include <windows.h>
 
 #include <cstdio>
 #include <vector>
