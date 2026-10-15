@@ -33,10 +33,10 @@ export function SettingsPanel() {
     return (
         <div className={cl("panel")}>
             <Flex flexDirection="column" gap="0.25em">
-                <Heading tag="h4">Звук трансляции</Heading>
+                <Heading tag="h4">Stream audio</Heading>
                 <Span size="xs" className={cl("muted")}>
-                    Выберите, какие приложения слышат зрители во время демонстрации экрана.
-                    Ваш собственный звук, микрофон и голосовой канал не затрагиваются.
+                    Choose which applications the viewers hear while you share your screen.
+                    Your own audio, the microphone and the voice call are never affected.
                 </Span>
             </Flex>
 

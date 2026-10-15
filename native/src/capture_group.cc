@@ -49,11 +49,11 @@ GroupedCaptureSource::~GroupedCaptureSource() { stop(); }
 
 bool GroupedCaptureSource::start(std::string& error) {
     if (parts_.empty()) {
-        error = "не передано ни одного экземпляра приложения " + displayName_;
+        error = "no instance of the application was passed: " + displayName_;
         return false;
     }
     if (running_.exchange(true)) {
-        error = "захват уже запущен";
+        error = "the capture is already running";
         return false;
     }
 
@@ -67,13 +67,13 @@ bool GroupedCaptureSource::start(std::string& error) {
             started++;
             continue;
         }
-        startErrors_[i] = partError.empty() ? "не удалось запустить захват экземпляра" : partError;
+        startErrors_[i] = partError.empty() ? "could not start the capture of one instance" : partError;
         if (firstError.empty()) firstError = startErrors_[i];
     }
 
     if (started == 0) {
         running_ = false;
-        error = "не удалось захватить ни одного экземпляра " + displayName_ + ": " + firstError;
+        error = "no instance could be captured: " + displayName_ + ": " + firstError;
         return false;
     }
 
@@ -81,8 +81,8 @@ bool GroupedCaptureSource::start(std::string& error) {
     // missing instance is reported instead of being hidden.
     if (started < parts_.size()) {
         error.clear();
-        startErrors_.push_back("часть экземпляров приложения не захвачена (" + std::to_string(parts_.size() - started)
-            + " из " + std::to_string(parts_.size()) + ")");
+        startErrors_.push_back("part of the application instances was not captured (" + std::to_string(parts_.size() - started)
+            + " of " + std::to_string(parts_.size()) + ")");
     }
 
     thread_ = std::thread([this] { mixLoop(); });
@@ -140,8 +140,8 @@ std::string GroupedCaptureSource::formatDescription() const {
         if (part) formats.push_back(part->formatDescription());
     }
 
-    const std::string summary = summarise(formats, "нет данных");
-    return std::to_string(parts_.size()) + " экземпляра(ов), сумма: " + summary;
+    const std::string summary = summarise(formats, "no data");
+    return std::to_string(parts_.size()) + " instance(s), total: " + summary;
 }
 
 int GroupedCaptureSource::latencyMs() const {

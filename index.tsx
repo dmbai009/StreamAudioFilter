@@ -42,8 +42,8 @@ let interceptor: InterceptorHandle | null = null;
 
 export default definePlugin({
     name: "StreamAudioFilter",
-    description: "Выбор приложений, звук которых слышат зрители демонстрации экрана. Локальный звук, микрофон и голосовой канал не меняются.",
-    searchTerms: ["звук", "трансляция", "audio", "screenshare", "stream", "wasapi"],
+    description: "Choose which applications the viewers of a screen share hear. Local playback, the microphone and the voice call are never touched.",
+    searchTerms: ["audio", "stream", "screenshare", "wasapi", "sound", "share"],
     tags: ["Voice", "Media"],
     authors: [{ name: "StreamAudioFilter", id: 0n }],
 
@@ -80,7 +80,7 @@ export default definePlugin({
             <>
                 <Menu.MenuItem
                     id="vc-saf-toggle-panel"
-                    label="Звук трансляции: показать панель"
+                    label="Stream audio: show the panel"
                     action={() => {
                         settings.store.showFloatingPanel = true;
                         mountFloatingPanel();
@@ -88,7 +88,7 @@ export default definePlugin({
                 />
                 <Menu.MenuItem
                     id="vc-saf-open-filters"
-                    label="Звук трансляции: сбросить фильтры"
+                    label="Stream audio: reset the filters"
                     action={() => void store.resetFilters()}
                 />
             </>
@@ -100,7 +100,7 @@ export default definePlugin({
 
         interceptor = installInterceptor({
             isAvailable: () => settings.store.filterEnabled,
-            unavailableReason: () => store.getSnapshot().lastError || "фильтрация выключена в настройках плагина",
+            unavailableReason: () => store.getSnapshot().lastError || "filtering is switched off in the plugin settings",
             createTrack: () => store.startFilteredTrack(),
             // Fail closed by default: without this explicit opt-in the plugin
             // removes the stream audio when the filter can not be applied

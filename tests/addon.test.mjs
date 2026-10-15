@@ -26,9 +26,9 @@ const modulePath = resolve(process.argv[2] ?? "native/build/Release/streamaudiof
 const addon = require(modulePath);
 
 const APPS = [
-    { appKey: "exe:game", displayName: "Игра", exePath: "C:\\Games\\game.exe", exeName: "game.exe", pid: 100, parentPid: 1, playing: true, capturable: true },
-    { appKey: "exe:music", displayName: "Плеер", exePath: "C:\\Music\\player.exe", exeName: "player.exe", pid: 200, parentPid: 1, playing: true, capturable: true },
-    { appKey: "exe:chat", displayName: "Чат", exePath: "C:\\Chat\\chat.exe", exeName: "chat.exe", pid: 300, parentPid: 1, playing: false, capturable: true }
+    { appKey: "exe:game", displayName: "Game", exePath: "C:\\Games\\game.exe", exeName: "game.exe", pid: 100, parentPid: 1, playing: true, capturable: true },
+    { appKey: "exe:music", displayName: "Player", exePath: "C:\\Music\\player.exe", exeName: "player.exe", pid: 200, parentPid: 1, playing: true, capturable: true },
+    { appKey: "exe:chat", displayName: "Chat", exePath: "C:\\Chat\\chat.exe", exeName: "chat.exe", pid: 300, parentPid: 1, playing: false, capturable: true }
 ];
 
 const json = value => JSON.parse(value);
@@ -90,7 +90,7 @@ test("the whole pipeline works end to end on the test backend", async () => {
     const apps = json(addon.apps());
     assert.equal(apps.length, 3);
     const game = apps.find(app => app.appKey === "exe:game");
-    assert.equal(game.displayName, "Игра");
+    assert.equal(game.displayName, "Game");
     assert.ok(["transmitting", "silent", "excluded"].includes(game.state));
 
     // Nothing is captured while the capture gate is closed ...
@@ -154,7 +154,7 @@ test("the whole pipeline works end to end on the test backend", async () => {
     assert.equal(modeB.find(app => app.appKey === "exe:game").transmitting, false);
 
     // A new application appears while the stream is running.
-    addon.setMockApps([...APPS, { appKey: "exe:new", displayName: "Новое", exePath: "C:\\New\\new.exe", pid: 400, parentPid: 1, playing: true, capturable: true }]);
+    addon.setMockApps([...APPS, { appKey: "exe:new", displayName: "New app", exePath: "C:\\New\\new.exe", pid: 400, parentPid: 1, playing: true, capturable: true }]);
     addon.setRules({ mode: 0, overrides: {}, active: true });
     await waitUntil(() => json(addon.apps()).length === 4, "a new application shows up");
     const withNew = json(addon.apps());
@@ -201,7 +201,7 @@ test("an application started twice is one entry with two captured instances", as
     assert.equal(listed.length, 1, "one application, not two entries");
     assert.equal(listed[0].instances, 2, "the panel knows that two instances are summed");
     assert.equal(listed[0].captured, true);
-    assert.match(listed[0].format, /экземпляр/, `format describes both trees: ${listed[0].format}`);
+    assert.match(listed[0].format, /instance/, `format describes both trees: ${listed[0].format}`);
 
     // One stream for the application: the two instances are summed inside the
     // capture, so the engine does not mix the same application twice.

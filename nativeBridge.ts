@@ -22,7 +22,7 @@ type NativeApi = PluginNative<typeof import("./native")>;
 /**
  * VencordNative is a global that only exists in the desktop client; in the
  * browser build it is a stub, so both cases are handled here and the UI says
- * "недоступно" instead of throwing.
+ * "unavailable" instead of throwing.
  */
 const helpers = (typeof VencordNative === "undefined" ? null : VencordNative.pluginHelpers) as Record<string, NativeApi> | null;
 const native = helpers?.StreamAudioFilter ?? null;
@@ -31,7 +31,7 @@ export const IS_NATIVE_AVAILABLE = native != null;
 
 function unavailable<T>(fallback: T, what: string): Promise<T> {
 
-    console.warn(`[StreamAudioFilter] ${what} недоступно: нативная часть работает только в настольном Discord`);
+    console.warn(`[StreamAudioFilter] ${what} is unavailable: the native part only works in the desktop Discord client`);
     return Promise.resolve(fallback);
 }
 
@@ -42,8 +42,8 @@ export const Native = {
                 platform: "browser",
                 arch: "",
                 isWindows: false,
-                addon: { loaded: false, path: "", version: "", error: "нативная часть недоступна в браузере", triedPaths: [], napi: 0 },
-                support: { supported: false, os: "браузер", build: 0, reason: "фильтрация звука по приложениям требует настольного Discord", detail: "", checks: [], platform: "browser" },
+                addon: { loaded: false, path: "", version: "", error: "the native part is unavailable in the browser", triedPaths: [], napi: 0 },
+                support: { supported: false, os: "browser", build: 0, reason: "per application audio filtering needs the desktop Discord client", detail: "", checks: [], platform: "browser" },
                 dataDir: "",
                 discordExecutable: "",
                 mock: false
@@ -53,12 +53,12 @@ export const Native = {
     },
 
     refreshApps(): Promise<StartResult> {
-        if (!native) return unavailable<StartResult>({ ok: false }, "обновление списка");
+        if (!native) return unavailable<StartResult>({ ok: false }, "refreshing the list");
         return native.refreshApps();
     },
 
     async listApps(): Promise<AppInfo[]> {
-        if (!native) return unavailable<AppInfo[]>([], "список приложений");
+        if (!native) return unavailable<AppInfo[]>([], "the application list");
         const apps = await native.listApps();
         // The engine reports the peak level as an integer 0..1000 to keep the
         // JSON small; the UI works with 0..1.
@@ -66,7 +66,7 @@ export const Native = {
     },
 
     getStats(): Promise<EngineStats | null> {
-        if (!native) return unavailable<EngineStats | null>(null, "состояние движка");
+        if (!native) return unavailable<EngineStats | null>(null, "the engine state");
         return native.getStats();
     },
 
@@ -84,9 +84,9 @@ export const Native = {
         if (!native) {
             return Promise.resolve({
                 supported: false,
-                os: "браузер",
+                os: "browser",
                 build: 0,
-                reason: "нативная часть недоступна",
+                reason: "the native part is unavailable",
                 detail: "",
                 checks: [],
                 platform: "browser"
@@ -96,24 +96,24 @@ export const Native = {
     },
 
     setMockApps(apps: MockApp[]): Promise<StartResult> {
-        if (!native) return unavailable<StartResult>({ ok: false }, "тестовый режим");
+        if (!native) return unavailable<StartResult>({ ok: false }, "the test mode");
         return native.setMockApps(apps);
     },
 
     openAddonFolder(): Promise<void> {
-        if (!native) return unavailable(undefined, "открытие папки");
+        if (!native) return unavailable(undefined, "opening the folder");
         return native.openAddonFolder();
     },
 
     confirmBuildInstructions(): Promise<boolean> {
-        if (!native) return unavailable(false, "инструкция по сборке");
+        if (!native) return unavailable(false, "the build instructions");
         return native.confirmAndRevealInstructions();
     }
 };
 
 export const Engine = {
     start(options: EngineStartOptions): Promise<StartResult> {
-        if (!native) return Promise.resolve({ ok: false, error: "нативная часть недоступна в браузере" });
+        if (!native) return Promise.resolve({ ok: false, error: "the native part is unavailable in the browser" });
         return native.startEngine(options);
     },
 
@@ -123,7 +123,7 @@ export const Engine = {
     },
 
     setRules(rules: RuleSetPayload): Promise<StartResult> {
-        if (!native) return Promise.resolve({ ok: false, error: "нативная часть недоступна" });
+        if (!native) return Promise.resolve({ ok: false, error: "the native part is unavailable" });
         return native.setRules(rules);
     }
 };

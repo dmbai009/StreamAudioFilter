@@ -118,24 +118,24 @@ export const FloatingPanel = ErrorBoundary.wrap(function FloatingPanel() {
             >
                 <Flex flexDirection="row" gap="0.4em" alignItems="center">
                     <Icon kind={state.stream.filtering ? "on" : state.stream.active ? "warn" : "off"} />
-                    <Span size="sm" weight="semibold">Звук трансляции</Span>
+                    <Span size="sm" weight="semibold">Stream audio</Span>
                     {collapsed && (
                         <Span size="xs" className={cl("muted")}>
-                            {state.stream.active ? `${captured} захв.` : "нет трансляции"}
+                            {state.stream.active ? `${captured} cap.` : "no share"}
                         </Span>
                     )}
                 </Flex>
                 <Flex flexDirection="row" gap="0.2em" alignItems="center">
                     <button
                         className={cl("floating-btn")}
-                        title={collapsed ? "Развернуть" : "Свернуть"}
+                        title={collapsed ? "Expand" : "Collapse"}
                         onClick={() => setCollapsed(!collapsed)}
                     >
                         {collapsed ? "▾" : "▴"}
                     </button>
                     <button
                         className={cl("floating-btn")}
-                        title="Скрыть панель (включается в настройках плагина)"
+                        title="Hide the panel (enable it again in the plugin settings)"
                         onClick={() => {
                             setVisible(false);
                             settings.store.showFloatingPanel = false;

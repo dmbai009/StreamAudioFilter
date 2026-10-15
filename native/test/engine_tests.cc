@@ -356,7 +356,7 @@ static void testStreamLimit() {
 
     const auto stats = fixture.engine->stats();
     const bool warned = std::any_of(stats.warnings.begin(), stats.warnings.end(), [](const std::string& warning) {
-        return warning.find("предел") != std::string::npos;
+        return warning.find("limit") != std::string::npos;
     });
     CHECK(warned, "user visible warning about the limit");
 }
