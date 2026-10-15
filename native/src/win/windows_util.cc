@@ -4,12 +4,12 @@
 // Strings, HRESULT diagnostics, OS version, process metadata and the capability
 // probe. No audio streaming happens here.
 
+#include <appmodel.h>
 #include <audioclient.h>
 #include <audioclientactivationparams.h>
 #include <mmdeviceapi.h>
 #include <propidl.h>
 #include <tlhelp32.h>
-#include <verrsrc.h>
 #include <windows.h>
 
 #include <cstdio>

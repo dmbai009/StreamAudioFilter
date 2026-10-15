@@ -46,6 +46,7 @@ interface AddonApi {
     apps(): string;
     stats(): string;
     readPcm(frames: number): Uint8Array;
+    refresh(): string;
     probe(backend: string): string;
     version(): string;
     setMockApps(apps: MockApp[]): string;
@@ -256,6 +257,20 @@ export async function setRules(_: unknown, rules: RuleSetPayload): Promise<Start
         return JSON.parse(api.setRules(rules)) as StartResult;
     } catch (error) {
         return { ok: false, error: `не удалось применить правила: ${(error as Error).message}` };
+    }
+}
+
+/**
+ * Asks the engine to re-read the application list instead of using the cached
+ * one; the "Обновить список" button in the panel uses this.
+ */
+export async function refreshApps(_: unknown): Promise<StartResult> {
+    const { api } = loadAddon();
+    if (!api) return { ok: false, error: "нативный модуль не загружен" };
+    try {
+        return JSON.parse(api.refresh()) as StartResult;
+    } catch (error) {
+        return { ok: false, error: (error as Error).message };
     }
 }
 

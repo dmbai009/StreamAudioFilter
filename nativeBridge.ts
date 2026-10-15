@@ -52,6 +52,11 @@ export const Native = {
         return native.getEnvironment();
     },
 
+    refreshApps(): Promise<StartResult> {
+        if (!native) return unavailable<StartResult>({ ok: false }, "обновление списка");
+        return native.refreshApps();
+    },
+
     async listApps(): Promise<AppInfo[]> {
         if (!native) return unavailable<AppInfo[]>([], "список приложений");
         const apps = await native.listApps();

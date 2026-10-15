@@ -299,6 +299,19 @@ napi_value Stats(napi_env env, napi_callback_info) {
     return makeString(env, json);
 }
 
+napi_value Refresh(napi_env env, napi_callback_info info) {
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_engine) g_engine->requestRefresh();
+    }
+    std::string json;
+    {
+        JsonObject object(json);
+        object.boolean("ok", true);
+    }
+    return makeString(env, json);
+}
+
 napi_value ReadPcm(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1] = {};
@@ -430,6 +443,7 @@ napi_value Init(napi_env env, napi_value exports) {
         { "apps", nullptr, Apps, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "stats", nullptr, Stats, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "readPcm", nullptr, ReadPcm, nullptr, nullptr, nullptr, napi_default, nullptr },
+        { "refresh", nullptr, Refresh, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "probe", nullptr, Probe, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "version", nullptr, Version, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "setMockApps", nullptr, SetMockApps, nullptr, nullptr, nullptr, napi_default, nullptr },
