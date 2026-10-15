@@ -58,21 +58,29 @@ jobs:
           name: streamaudiofilter-vencord-bundle
           path: dist
 
+      - name: Download the probe built by the gate
+        uses: actions/download-artifact@v4
+        with:
+          name: streamaudiofilter-probe-windows-x64
+          path: dist
+
       - name: Verify, checksum and describe both assets
         run: |
           set -euo pipefail
           cd dist
-          for asset in streamaudiofilter.node streamaudiofilter-vencord-dist.zip; do
+          for asset in streamaudiofilter.node streamaudiofilter-vencord-dist.zip process-loopback-probe.exe; do
               test -f "$asset" || { echo "::error::$asset is missing from the artifacts"; exit 1; }
               ls -l "$asset"
           done
           # The addon must be a real Windows binary, not an error page or an LFS stub.
-          head -c 2 streamaudiofilter.node | od -An -tx1 | grep -qi "4d 5a" \
-              || { echo "::error::streamaudiofilter.node is not a PE binary"; exit 1; }
+          for binary in streamaudiofilter.node process-loopback-probe.exe; do
+              head -c 2 "$binary" | od -An -tx1 | grep -qi "4d 5a" \
+                  || { echo "::error::$binary is not a PE binary"; exit 1; }
+          done
           unzip -l streamaudiofilter-vencord-dist.zip | grep -q "Vencord-dist/renderer.js" \
               || { echo "::error::the bundle does not look like a Vencord dist"; exit 1; }
           rm -f streamaudiofilter-vencord-dist.zip.sha256
-          sha256sum streamaudiofilter.node streamaudiofilter-vencord-dist.zip | tee SHA256SUMS.txt
+          sha256sum streamaudiofilter.node streamaudiofilter-vencord-dist.zip process-loopback-probe.exe | tee SHA256SUMS.txt
 
       - name: Write the install note and the release notes
         run: |
@@ -162,10 +170,12 @@ jobs:
 
           addon_hash=$(sha256sum dist/streamaudiofilter.node | cut -d' ' -f1)
           bundle_hash=$(sha256sum dist/streamaudiofilter-vencord-dist.zip | cut -d' ' -f1)
-          printf '\n**SHA-256:**\n\n    streamaudiofilter.node              %s\n    streamaudiofilter-vencord-dist.zip %s\n' \
-              "$addon_hash" "$bundle_hash" >> /tmp/RELEASE-NOTES.md
+          probe_hash=$(sha256sum dist/process-loopback-probe.exe | cut -d' ' -f1)
+          printf '\n**SHA-256:**\n\n    streamaudiofilter.node              %s\n    streamaudiofilter-vencord-dist.zip %s\n    process-loopback-probe.exe         %s\n' \
+              "$addon_hash" "$bundle_hash" "$probe_hash" >> /tmp/RELEASE-NOTES.md
           echo "::notice title=SHA-256 of streamaudiofilter.node::$addon_hash"
           echo "::notice title=SHA-256 of streamaudiofilter-vencord-dist.zip::$bundle_hash"
+          echo "::notice title=SHA-256 of process-loopback-probe.exe::$probe_hash"
 
       - name: Publish
         run: |
@@ -176,10 +186,11 @@ jobs:
           cd dist
           if gh release view "$TAG" >/dev/null 2>&1; then
               gh release upload "$TAG" streamaudiofilter.node streamaudiofilter-vencord-dist.zip \
-                  SHA256SUMS.txt INSTALL.txt --clobber >/tmp/publish.log 2>&1 || status=$?
+                  process-loopback-probe.exe SHA256SUMS.txt INSTALL.txt --clobber >/tmp/publish.log 2>&1 || status=$?
           else
               gh release create "$TAG" \
                   streamaudiofilter.node streamaudiofilter-vencord-dist.zip \
+                  process-loopback-probe.exe \
                   SHA256SUMS.txt INSTALL.txt \
                   --title "StreamAudioFilter $TAG" \
                   --notes-file /tmp/RELEASE-NOTES.md \

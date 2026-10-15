@@ -23,6 +23,7 @@ engine_sources=(
     "${root}/native/src/app_identity.cc"
     "${root}/native/src/capture_group.cc"
     "${root}/native/src/engine.cc"
+    "${root}/native/src/hr_advice.cc"
     "${root}/native/src/mock/mock_backend.cc"
 )
 

@@ -39,6 +39,7 @@
 #include <vector>
 
 #include "../dsp/convert.h"
+#include "../hr_advice.h"
 #include "../dsp/resampler.h"
 #include "audio_subformat.h"
 #include "com_iids.h"
@@ -66,21 +67,6 @@ public:
 private:
     HANDLE completed_;
 };
-
-/** Builds the interleaved float format we ask the audio engine to deliver. */
-void makeFloatFormat(WAVEFORMATEXTENSIBLE& format, int sampleRate, int channels) {
-    std::memset(&format, 0, sizeof(format));
-    format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-    format.Format.nChannels = static_cast<WORD>(channels);
-    format.Format.nSamplesPerSec = static_cast<DWORD>(sampleRate);
-    format.Format.wBitsPerSample = 32;
-    format.Format.nBlockAlign = static_cast<WORD>(channels * 4);
-    format.Format.nAvgBytesPerSec = static_cast<DWORD>(sampleRate * channels * 4);
-    format.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
-    format.Samples.wValidBitsPerSample = 32;
-    format.dwChannelMask = channels >= 2 ? kSpeakerStereo : kSpeakerMono;
-    format.SubFormat = kSubFormatIeeeFloat;
-}
 
 AudioFormat audioFormatFrom(const WAVEFORMATEX* format) {
     AudioFormat result;
@@ -208,7 +194,22 @@ private:
         error_ = error;
     }
 
-    /** ActivateAudioInterfaceAsync with the process loopback activation params. */
+    /**
+     * ActivateAudioInterfaceAsync with the process loopback activation params.
+     *
+     * The four ways this can fail are kept apart on purpose, because they mean
+     * completely different things (and only two of them are about the OS):
+     *   1. [activation-call]     the call itself was refused. E_ILLEGAL_METHOD_CALL
+     *                            (0x8000000E) belongs here and means the completion
+     *                            handler was not usable from the calling apartment
+     *                            — it is not a statement about the Windows build.
+     *   2. [activation-wait]     the call was accepted but the callback never came.
+     *   3. [activate-result]     GetActivateResult failed, or the activation it
+     *                            reports failed (two different HRESULTs).
+     *   4. [interface]           the activated object has no IAudioClient.
+     * Every one of them lands in `error` with its stage, its HRESULT name, the
+     * numeric value and what the code means.
+     */
     HRESULT activate(ComPtr<IAudioClient>& client, std::string& error) {
         AUDIOCLIENT_ACTIVATION_PARAMS params = {};
         params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
@@ -222,39 +223,79 @@ private:
 
         HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (!completed) {
-            error = "could not create the activation event";
+            error = "[activation-call] the synchronisation event of the activation could not be created";
             return E_FAIL;
         }
 
-        ComPtr<IActivateAudioInterfaceAsyncOperation> operation;
+        // Declaration order is destruction order in reverse: the operation is
+        // released before the handler. Windows keeps a reference to the handler
+        // until the operation is gone, and the callback must not run into a
+        // destroyed object.
         ComPtr<ActivationHandler> handler(new ActivationHandler(completed));
+        ComPtr<IActivateAudioInterfaceAsyncOperation> operation;
 
-        HRESULT hr = ActivateAudioInterfaceAsync(
+        const HRESULT callHr = ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &activateParams, handler.get(), operation.put());
-        if (SUCCEEDED(hr)) {
-            if (WaitForSingleObject(completed, kStartTimeoutMs) != WAIT_OBJECT_0) {
-                error = "timeout while activating the process capture";
-                hr = E_FAIL;
-            } else {
-                HRESULT activateResult = E_FAIL;
-                ComPtr<IUnknown> unknown;
-                hr = operation->GetActivateResult(&activateResult, unknown.put());
-                if (SUCCEEDED(hr)) hr = activateResult;
-                if (SUCCEEDED(hr) && unknown) hr = unknown->QueryInterface(IID_PPV_ARGS(client.put()));
+
+        if (FAILED(callHr)) {
+            error = "[activation-call] " + formatHresult(callHr, "ActivateAudioInterfaceAsync was refused") + "\n"
+                + "  the request was rejected before anything was activated";
+            if (callHr == hr::IllegalMethodCall) {
+                error += handler->isAgile()
+                    ? "\n  this handler is an agile object, so the calling apartment is the remaining candidate"
+                    : "\n  this handler is not an agile object (IAgileObject) — that is the documented cause";
             }
+            CloseHandle(completed);
+            return callHr;
         }
 
-        if (FAILED(hr) && error.empty()) {
-            error = formatHresult(hr, "could not activate the capture of process " + std::to_string(targetPid_));
-            if (hr == E_INVALIDARG || hr == E_NOTIMPL) {
-                error += " (this Windows build rejected the activation of a per process capture; Windows 10 "
-                         "build 19041/2004 and newer do support it in practice, so the exact "
-                         "error code matters more than the build number)";
+        if (WaitForSingleObject(completed, kStartTimeoutMs) != WAIT_OBJECT_0) {
+            error = "[activation-wait] the activation callback did not fire within " + std::to_string(kStartTimeoutMs)
+                + " ms (the call itself was accepted)";
+            CloseHandle(completed);
+            return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+        }
+
+        HRESULT activateResult = E_FAIL;
+        ComPtr<IUnknown> unknown;
+        const HRESULT resultHr = operation->GetActivateResult(&activateResult, unknown.put());
+        if (FAILED(resultHr)) {
+            error = "[activate-result] "
+                + formatHresult(resultHr, "GetActivateResult failed") + "\n"
+                + "  the asynchronous operation never produced a result";
+            CloseHandle(completed);
+            return resultHr;
+        }
+
+        if (FAILED(activateResult)) {
+            error = "[activate-result] "
+                + formatHresult(activateResult, "the activation of process " + std::to_string(targetPid_) + " was refused")
+                + "\n  the call succeeded and the callback fired: the audio engine itself rejected the activation";
+            if (activateResult == E_INVALIDARG || activateResult == E_NOTIMPL) {
+                error += "\n  (rejected activation parameters look exactly like this; Windows 10 version 2004 / build "
+                         "19041 and newer do implement per process capture in practice, so the exact code matters "
+                         "more than the build number)";
             }
+            CloseHandle(completed);
+            return activateResult;
+        }
+
+        if (!unknown) {
+            error = "[activate-result] the activation reported success but returned no object";
+            CloseHandle(completed);
+            return E_UNEXPECTED;
+        }
+
+        const HRESULT qiHr = unknown->QueryInterface(IID_PPV_ARGS(client.put()));
+        if (FAILED(qiHr) || !client) {
+            error = "[interface] " + formatHresult(qiHr, "QueryInterface(IAudioClient) failed") + "\n"
+                + "  the activated object is not an audio client";
+            CloseHandle(completed);
+            return qiHr;
         }
 
         CloseHandle(completed);
-        return hr;
+        return S_OK;
     }
 
     /** Initializes the client, negotiating the format the engine will deliver. */
@@ -282,12 +323,13 @@ private:
         }
 
         if (FAILED(hr)) {
-            error = formatHresult(hr, "could not initialise the capture of " + request_.displayName);
+            error = "[client-init] " + formatHresult(hr, "the audio client refused to initialise for " + request_.displayName)
+                + "\n  neither the requested format nor the endpoint mix format was accepted";
             return hr;
         }
 
         if (FAILED(hr = client->GetService(IID_PPV_ARGS(captureClient.put())))) {
-            error = formatHresult(hr, "could not obtain IAudioCaptureClient");
+            error = "[capture-client] " + formatHresult(hr, "IAudioCaptureClient is not available");
             return hr;
         }
 
@@ -418,7 +460,7 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
 
     std::string error;
     if (FAILED(comExpected)) {
-        error = formatHresult(comExpected, "could not initialise COM in the capture thread");
+        error = "[com] " + formatHresult(comExpected, "COM could not be initialised in the capture thread");
         ready.set_value(error);
         return;
     }
@@ -435,16 +477,16 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
 
     if (SUCCEEDED(hr)) {
         hr = client->SetEventHandle(captureEvent_);
-        if (FAILED(hr)) error = formatHresult(hr, "could not bind the capture event");
+        if (FAILED(hr)) error = "[capture-start] " + formatHresult(hr, "SetEventHandle failed");
     }
 
     if (SUCCEEDED(hr)) {
         hr = client->Start();
-        if (FAILED(hr)) error = formatHresult(hr, "could not start the capture");
+        if (FAILED(hr)) error = "[capture-start] " + formatHresult(hr, "Start failed");
     }
 
     if (FAILED(hr)) {
-        if (error.empty()) error = formatHresult(hr, "could not start the capture");
+        if (error.empty()) error = "[capture-start] " + formatHresult(hr, "the capture could not be started");
         setError(error);
         ready.set_value(error);
         if (comOwned) CoUninitialize();
@@ -470,10 +512,10 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
             if (hr == AUDCLNT_S_BUFFER_EMPTY) break;
             if (FAILED(hr)) {
                 if (hr == AUDCLNT_E_DEVICE_INVALIDATED || hr == AUDCLNT_E_RESOURCES_INVALIDATED) {
-                    setError(formatHresult(hr, "the output device changed during the capture"));
+                    setError("[device-changed] " + formatHresult(hr, "the audio device changed during the capture"));
                     running_ = false;
                 } else if (hr != AUDCLNT_S_BUFFER_EMPTY) {
-                    setError(formatHresult(hr, "the capture buffer could not be read"));
+                    setError("[data] " + formatHresult(hr, "the capture buffer could not be read"));
                 }
                 break;
             }
