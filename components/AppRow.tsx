@@ -5,101 +5,96 @@
  */
 
 /**
+ * StreamAudioFilter — one application in the list: icon, name, executable,
+ * a status that only claims what is true, and the switch.
  *
- * StreamAudioFilter — per application audio filtering for screen shares.
- * One application in the list: icon, name, executable, audio activity and the
- * switch that decides whether the viewers hear it.
+ * The switch always means "the viewers may hear this application". The status
+ * says "sent" only while the share audio is confirmed to come from the plugin
+ * and this application is really part of the mix.
  */
 
-import { Span } from "@components/Span";
 import { Switch } from "@components/Switch";
 import { Tooltip } from "@webpack/common";
 
-import type { AppListEntry } from "../types";
+import { type I18nKey, t } from "../i18n";
+import type { AppListEntry, ShareAudio } from "../types";
 
 const cl = (name: string) => `vc-saf-${name}`;
 
-function ActivityMeter({ peak, active }: { peak: number; active: boolean; }) {
-    const level = Math.max(0, Math.min(1, peak));
-    const bars = 4;
+type Tone = "ok" | "warn" | "danger" | "muted" | "neutral";
+
+function statusOf(entry: AppListEntry, share: ShareAudio): { text: string; tone: Tone; hint: string; } {
+    const make = (key: I18nKey, tone: Tone, hint = "", params?: Record<string, string>) => ({ text: t(key, params), tone, hint });
+
+    if (entry.section === "closed") return make("state.closed", "muted");
+    if (!entry.capturable) return make("state.unsupported", "muted", entry.notCapturableReason);
+    if (!entry.allowed) return make("state.excluded", "muted", entry.router && entry.byDefault ? t("row.router") : t("row.switch.off"));
+    if (entry.state === "blocked") return make("state.blocked", "danger", entry.blockedReason);
+    if (entry.state === "error") return make("state.error", "danger", entry.error);
+    if (entry.silentCapture) return make("state.silentCapture", "warn", t("problem.silentCapture", { app: entry.title, device: entry.devices[0] ?? "?" }));
+    if (entry.state === "covered") return make("state.covered", "neutral", t("state.covered.hint", { app: entry.coveredBy }), { app: entry.coveredBy });
+    if (share === "filtered" && entry.section === "current") {
+        return entry.captured
+            ? make("state.sending", "ok", t("state.sending.hint"))
+            : make("state.waiting", "neutral", t("state.waiting.hint"));
+    }
+    return make("state.ready", "neutral", t("state.ready.hint"));
+}
+
+function Meter({ level }: { level: number; }) {
     return (
-        <div className={cl("meter")} aria-hidden="true">
-            {Array.from({ length: bars }, (_, index) => (
-                <i
-                    key={index}
-                    className={cl("meter-bar")}
-                    data-on={active && level > (index + 1) / (bars + 1) ? "true" : "false"}
-                />
-            ))}
-        </div>
+        <span className={cl("meter")} aria-hidden="true">
+            <span className={cl("meter-fill")} style={{ transform: `scaleX(${Math.max(0, Math.min(1, level))})` }} />
+        </span>
     );
 }
 
-function StatusChip({ entry }: { entry: AppListEntry; }) {
-    const state = !entry.capturable
-        ? { text: "unavailable", tone: "danger" }
-        : entry.error
-            ? { text: "error", tone: "danger" }
-            : entry.state === "excluded"
-                ? { text: "excluded", tone: "muted" }
-                : entry.section === "closed"
-                    ? { text: "closed", tone: "muted" }
-                    : entry.transmitting && entry.state === "transmitting"
-                        ? { text: "sent", tone: "ok" }
-                        : entry.transmitting
-                            ? { text: "waiting for audio", tone: "warn" }
-                            : { text: "no audio", tone: "muted" };
-
-    return <span className={cl("chip")} data-tone={state.tone}>{state.text}</span>;
-}
-
-export function AppRow(props: {
+export function AppRow({ entry, icon, share, onChange }: {
     entry: AppListEntry;
     icon: string | null | undefined;
-    onChange(transmit: boolean): void;
-    onForget?(): void;
+    share: ShareAudio;
+    onChange(allowed: boolean): void;
 }) {
-    const { entry, icon } = props;
-
-    const title = (
-        <div className={cl("row-title")}>
-            <span className={cl("row-name")}>{entry.title}</span>
-            {entry.ephemeral && (
-                <Tooltip text="A rule for this process cannot be saved: the application does not report the path of its executable">
-                    {props => <span className={cl("row-badge")} {...props}>not saved</span>}
-                </Tooltip>
-            )}
-        </div>
-    );
+    const status = statusOf(entry, share);
+    const sub = [entry.exeName, entry.instances > 1 ? t("row.instances", { n: entry.instances }) : ""].filter(Boolean).join(" · ");
 
     return (
-        <div className={cl("row")} data-state={entry.state}>
+        <div className={cl("row")} data-section={entry.section} data-allowed={entry.allowed ? "true" : "false"}>
             <div className={cl("row-icon")}>
                 {icon
-                    ? <img src={icon} alt="" width={28} height={28} />
-                    : <div className={cl("row-icon-fallback")}>{entry.title.slice(0, 1).toUpperCase()}</div>}
+                    ? <img src={icon} alt="" width={24} height={24} />
+                    : <span className={cl("row-icon-fallback")}>{entry.title.slice(0, 1).toUpperCase()}</span>}
             </div>
 
             <div className={cl("row-main")}>
-                {title}
-                <div className={cl("row-sub")}>
-                    <Span size="sm" className={cl("row-subtitle")}>{entry.subtitle}</Span>
-                    {entry.details && <Span size="sm" className={cl("row-details")}>{entry.details}</Span>}
+                <div className={cl("row-title")}>
+                    <span className={cl("row-name")} title={entry.title}>{entry.title}</span>
+                    {entry.byDefault && entry.section !== "closed" && (
+                        <Tooltip text={t("row.default.hint")}>
+                            {props => <span {...props} className={cl("tag")}>{t("row.default")}</span>}
+                        </Tooltip>
+                    )}
+                    {entry.ephemeral && (
+                        <Tooltip text={t("row.notSaved.hint")}>
+                            {props => <span {...props} className={cl("tag")}>{t("row.notSaved")}</span>}
+                        </Tooltip>
+                    )}
                 </div>
-                {entry.error && <Span size="sm" className={cl("row-error")}>{entry.error}</Span>}
+                {sub && <span className={cl("row-sub")} title={entry.exePath || sub}>{sub}</span>}
+                {entry.section === "current" && entry.capturable && <Meter level={entry.peak} />}
             </div>
 
-            <div className={cl("row-side")}>
-                <ActivityMeter peak={entry.peak} active={entry.section === "current" && entry.capturable} />
-                <StatusChip entry={entry} />
-                <Tooltip text={entry.transmitting ? "The viewers hear this application" : "The viewers do not hear this application"}>
-                    {tooltipProps => (
-                        <span {...tooltipProps}>
-                            <Switch checked={entry.transmitting} onChange={props.onChange} disabled={!entry.capturable && entry.section !== "closed"} />
-                        </span>
-                    )}
-                </Tooltip>
-            </div>
+            <Tooltip text={status.hint || status.text}>
+                {props => <span {...props} className={cl("chip")} data-tone={status.tone}>{status.text}</span>}
+            </Tooltip>
+
+            <Tooltip text={entry.allowed ? t("row.switch.on") : t("row.switch.off")}>
+                {props => (
+                    <span {...props} className={cl("row-switch")}>
+                        <Switch checked={entry.allowed} onChange={onChange} disabled={!entry.capturable && entry.section !== "closed"} />
+                    </span>
+                )}
+            </Tooltip>
         </div>
     );
 }

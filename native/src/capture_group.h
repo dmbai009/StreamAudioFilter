@@ -65,6 +65,9 @@ public:
     std::string formatDescription() const override;
     int latencyMs() const override;
     std::string lastError() const override;
+    /** Dead as soon as one of its trees died: the engine restarts the whole group. */
+    bool alive() const override;
+    float inputPeak() const override;
 
     /** Number of process trees that are captured for this application. */
     size_t partCount() const { return parts_.size(); }

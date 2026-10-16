@@ -3,72 +3,365 @@
  * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Styles of the plugin. Discord's own variables are used wherever possible so
- * the panels follow the active theme instead of fighting it.
+ * StreamAudioFilter styles. Only colour variables that exist in current
+ * Discord themes are used (--background-surface-*, --text-default, --border-*,
+ * --background-feedback-*, --text-feedback-*); the old --background-primary /
+ * --text-normal family no longer exists. Surfaces (popout, floating panel)
+ * always have an opaque background, with a neutral fallback should a variable
+ * ever disappear. Nothing here touches Discord's own elements.
  */
 
-/* ------------------------------------------------------------------ panel */
+/* ------------------------------------------------------------- surfaces */
 
-.vc-saf-panel,
+.vc-saf-popout,
+.vc-saf-floating {
+    color: var(--text-default, #dbdee1);
+    background: var(--background-surface-high, var(--background-base-lower, #2b2d31));
+    border: 1px solid var(--border-subtle, rgb(128 128 128 / 20%));
+    border-radius: 8px;
+    box-shadow: var(--shadow-high, 0 12px 24px rgb(0 0 0 / 24%));
+    box-sizing: border-box;
+}
+
 .vc-saf-popout {
+    width: 380px;
+    max-width: calc(100vw - 24px);
+    max-height: min(560px, 70vh);
     display: flex;
     flex-direction: column;
-    gap: 0.75em;
+    overflow: hidden;
 }
 
-.vc-saf-popout {
-    width: 420px;
-    max-width: 90vw;
-    max-height: 70vh;
-    overflow: hidden auto;
-    padding: 0.75em;
-}
-
-.vc-saf-muted {
-    color: var(--text-muted, var(--text-normal));
-    opacity: 0.85;
-}
-
-.vc-saf-divider {
-    margin: 0.25em 0;
-}
-
-.vc-saf-toolbar {
+.vc-saf-popout-head,
+.vc-saf-floating-head {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5em;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-subtle, rgb(128 128 128 / 20%));
+    flex: 0 0 auto;
+}
+
+.vc-saf-popout-title,
+.vc-saf-floating-title {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-weight: 600;
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vc-saf-popout-body,
+.vc-saf-floating-body {
+    padding: 12px;
+    overflow: hidden auto;
+    min-height: 0;
+}
+
+/* -------------------------------------------------------- floating panel */
+
+.vc-saf-floating-root {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1000;
+}
+
+.vc-saf-floating {
+    position: fixed;
+    width: 260px;
+    max-width: calc(100vw - 16px);
+    display: flex;
+    flex-direction: column;
+    pointer-events: auto;
+    overflow: hidden;
+}
+
+.vc-saf-floating[data-expanded="true"] {
+    width: 380px;
+    max-height: min(600px, calc(100vh - 32px));
+}
+
+.vc-saf-floating-head {
+    cursor: move;
+    user-select: none;
+    padding: 8px 8px 8px 12px;
+}
+
+.vc-saf-floating[data-expanded="false"] .vc-saf-floating-head {
+    border-bottom: none;
+}
+
+.vc-saf-floating[data-expanded="false"] .vc-saf-floating-body {
+    border-top: 1px solid var(--border-subtle, rgb(128 128 128 / 20%));
+}
+
+.vc-saf-icon-button {
+    all: unset;
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--interactive-text-default, var(--text-muted));
+    font-size: 12px;
+    flex: 0 0 auto;
+}
+
+.vc-saf-icon-button:hover {
+    background: var(--background-mod-normal, rgb(128 128 128 / 20%));
+    color: var(--text-default);
+}
+
+.vc-saf-icon-button:focus-visible {
+    outline: 2px solid var(--focus-primary, #00b0f4);
+}
+
+/* -------------------------------------------------------------- controls */
+
+.vc-saf-settings {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    color: var(--text-default);
+}
+
+.vc-saf-tagline,
+.vc-saf-note {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.4;
+    color: var(--text-muted);
+}
+
+.vc-saf-note {
+    font-size: 12px;
+}
+
+.vc-saf-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-size: 14px;
+    line-height: 1.35;
+}
+
+.vc-saf-controls[data-compact="true"] {
+    gap: 10px;
+}
+
+/* status: one card, the headline is what the viewers get */
+
+.vc-saf-status {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle, rgb(128 128 128 / 20%));
+    background: var(--background-mod-subtle, rgb(128 128 128 / 12%));
+}
+
+.vc-saf-status[data-tone="ok"] {
+    background: var(--background-feedback-positive);
+    border-color: var(--status-positive);
+}
+
+.vc-saf-status[data-tone="info"] {
+    background: var(--background-feedback-info);
+}
+
+.vc-saf-status[data-tone="warn"] {
+    background: var(--background-feedback-warning);
+    border-color: var(--status-warning);
+}
+
+.vc-saf-status[data-tone="danger"] {
+    background: var(--background-feedback-critical);
+    border-color: var(--status-danger);
+}
+
+.vc-saf-status-title {
+    font-weight: 600;
+    color: var(--text-strong, var(--text-default));
+}
+
+.vc-saf-status-detail,
+.vc-saf-status-reason {
+    font-size: 13px;
+    color: var(--text-default);
+    overflow-wrap: anywhere;
+}
+
+.vc-saf-status-reason {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-family: var(--font-code, monospace);
+}
+
+/* problems: one line, details on demand */
+
+.vc-saf-problems {
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle, rgb(128 128 128 / 20%));
+    overflow: hidden;
+}
+
+.vc-saf-problems[data-tone="danger"] {
+    border-color: var(--status-danger);
+}
+
+.vc-saf-problems[data-tone="warn"] {
+    border-color: var(--status-warning);
+}
+
+.vc-saf-problems-toggle {
+    all: unset;
+    box-sizing: border-box;
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text-default);
+}
+
+.vc-saf-problems[data-tone="danger"] .vc-saf-problems-toggle {
+    color: var(--text-feedback-critical, var(--text-default));
+}
+
+.vc-saf-problems[data-tone="warn"] .vc-saf-problems-toggle {
+    color: var(--text-feedback-warning, var(--text-default));
+}
+
+.vc-saf-problems-action {
+    font-weight: 500;
+    color: var(--text-link);
+    white-space: nowrap;
+}
+
+.vc-saf-problems-list {
+    margin: 0;
+    padding: 0 12px 10px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-default);
+}
+
+.vc-saf-problems-list li {
+    overflow-wrap: anywhere;
+}
+
+/* mode: a segmented control */
+
+.vc-saf-mode {
+    display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
 }
 
-.vc-saf-hint {
+.vc-saf-mode-label {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.vc-saf-segments {
+    display: inline-flex;
+    padding: 2px;
+    gap: 2px;
+    border-radius: 6px;
+    background: var(--background-mod-subtle, rgb(128 128 128 / 12%));
+}
+
+.vc-saf-segment {
+    all: unset;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    color: var(--text-muted);
+}
+
+.vc-saf-segment:hover {
+    color: var(--text-default);
+}
+
+.vc-saf-segment[data-selected="true"] {
+    background: var(--background-surface-highest, var(--background-mod-strong));
+    color: var(--text-strong, var(--text-default));
+    box-shadow: 0 1px 2px rgb(0 0 0 / 15%);
+}
+
+.vc-saf-segment:focus-visible {
+    outline: 2px solid var(--focus-primary, #00b0f4);
+}
+
+/* list */
+
+.vc-saf-list {
     display: flex;
     flex-direction: column;
-    gap: 0.35em;
-    padding: 0.5em 0.6em;
-    border-radius: 8px;
-    background: var(--background-mod-subtle, var(--background-secondary));
-    color: var(--text-muted, var(--text-normal));
+    gap: 12px;
 }
-
-/* ----------------------------------------------------------------- section */
 
 .vc-saf-section {
     display: flex;
     flex-direction: column;
-    gap: 0.35em;
+    gap: 4px;
 }
 
 .vc-saf-section-title {
+    display: flex;
+    justify-content: space-between;
+    padding: 0 4px;
+    font-size: 12px;
+    font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.02em;
-    color: var(--text-muted, var(--text-normal));
-    white-space: nowrap;
+    color: var(--text-muted);
 }
 
-.vc-saf-section-divider {
-    flex: 1 1 auto;
-    margin: 0;
+.vc-saf-section-count {
+    font-weight: 500;
+}
+
+.vc-saf-empty,
+.vc-saf-hint {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.vc-saf-empty {
+    padding: 12px;
+    text-align: center;
+    border-radius: 8px;
+    background: var(--background-mod-subtle, rgb(128 128 128 / 12%));
+}
+
+.vc-saf-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
+}
+
+.vc-saf-footer-actions {
+    display: flex;
+    gap: 8px;
+    margin-left: auto;
 }
 
 /* --------------------------------------------------------------------- row */
@@ -76,42 +369,42 @@
 .vc-saf-row {
     display: flex;
     align-items: center;
-    gap: 0.6em;
-    padding: 0.4em 0.5em;
+    gap: 10px;
+    min-height: 44px;
+    padding: 6px 8px;
     border-radius: 8px;
-    background: var(--background-mod-subtle, var(--background-secondary));
+    background: var(--background-mod-subtle, rgb(128 128 128 / 12%));
 }
 
-.vc-saf-row[data-state="error"],
-.vc-saf-row[data-state="unsupported"] {
-    background: color-mix(in srgb, var(--status-danger, #da373c) 12%, var(--background-mod-subtle, var(--background-secondary)));
+.vc-saf-row[data-allowed="false"] .vc-saf-row-icon,
+.vc-saf-row[data-allowed="false"] .vc-saf-row-name {
+    opacity: 0.6;
 }
 
 .vc-saf-row-icon {
-    flex: 0 0 auto;
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
 }
 
 .vc-saf-row-icon img {
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    display: block;
 }
 
 .vc-saf-row-icon-fallback {
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--background-tertiary, var(--background-secondary));
-    color: var(--text-muted, var(--text-normal));
+    font-size: 12px;
     font-weight: 600;
+    background: var(--background-mod-normal, rgb(128 128 128 / 20%));
+    color: var(--text-muted);
 }
 
 .vc-saf-row-main {
@@ -119,95 +412,99 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.1em;
+    gap: 2px;
 }
 
 .vc-saf-row-title {
     display: flex;
     align-items: center;
-    gap: 0.4em;
+    gap: 6px;
     min-width: 0;
 }
 
 .vc-saf-row-name {
     font-weight: 500;
-    white-space: nowrap;
+    color: var(--text-default);
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-.vc-saf-row-badge {
-    font-size: 0.6875rem;
-    padding: 0 0.35em;
-    border-radius: 4px;
-    background: var(--background-tertiary, var(--background-secondary));
-    color: var(--text-muted, var(--text-normal));
-    cursor: help;
+    white-space: nowrap;
 }
 
 .vc-saf-row-sub {
-    display: flex;
-    gap: 0.4em;
-    flex-wrap: wrap;
-    color: var(--text-muted, var(--text-normal));
+    font-size: 12px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.vc-saf-row-error {
-    color: var(--status-danger, #da373c);
-}
-
-.vc-saf-row-side {
+.vc-saf-tag {
     flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 0.5em;
+    font-size: 11px;
+    line-height: 16px;
+    padding: 0 5px;
+    border-radius: 4px;
+    background: var(--background-mod-normal, rgb(128 128 128 / 20%));
+    color: var(--text-muted);
+    cursor: help;
 }
-
-/* ------------------------------------------------------------------- meter */
 
 .vc-saf-meter {
-    display: flex;
-    align-items: flex-end;
-    gap: 2px;
-    height: 16px;
-}
-
-.vc-saf-meter-bar {
-    width: 3px;
+    display: block;
+    height: 3px;
+    width: 100%;
+    max-width: 120px;
     border-radius: 2px;
-    background: var(--background-tertiary, var(--background-secondary));
-    height: 30%;
+    overflow: hidden;
+    background: var(--background-mod-normal, rgb(128 128 128 / 20%));
 }
 
-.vc-saf-meter-bar[data-on="true"] {
-    background: var(--status-positive, #248046);
+.vc-saf-meter-fill {
+    display: block;
     height: 100%;
+    width: 100%;
+    transform-origin: left center;
+    background: var(--status-positive);
+    transition: transform 0.15s linear;
 }
-
-/* -------------------------------------------------------------------- chip */
 
 .vc-saf-chip {
-    font-size: 0.6875rem;
-    padding: 0.1em 0.45em;
-    border-radius: 999px;
+    flex: 0 0 auto;
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
-    background: var(--background-tertiary, var(--background-secondary));
-    color: var(--text-muted, var(--text-normal));
+    font-size: 12px;
+    line-height: 18px;
+    padding: 0 8px;
+    border-radius: 9px;
+    cursor: default;
+    background: var(--background-mod-normal, rgb(128 128 128 / 20%));
+    color: var(--text-muted);
 }
 
 .vc-saf-chip[data-tone="ok"] {
-    background: color-mix(in srgb, var(--status-positive, #248046) 25%, transparent);
-    color: var(--text-normal);
+    background: var(--background-feedback-positive);
+    color: var(--text-feedback-positive, var(--text-default));
 }
 
 .vc-saf-chip[data-tone="warn"] {
-    background: color-mix(in srgb, var(--status-warning, #f0b232) 25%, transparent);
-    color: var(--text-normal);
+    background: var(--background-feedback-warning);
+    color: var(--text-feedback-warning, var(--text-default));
 }
 
 .vc-saf-chip[data-tone="danger"] {
-    background: color-mix(in srgb, var(--status-danger, #da373c) 25%, transparent);
-    color: var(--text-normal);
+    background: var(--background-feedback-critical);
+    color: var(--text-feedback-critical, var(--text-default));
+}
+
+.vc-saf-chip[data-tone="neutral"] {
+    color: var(--text-default);
+}
+
+.vc-saf-row-switch {
+    flex: 0 0 auto;
+    display: inline-flex;
 }
 
 /* ------------------------------------------------------------- diagnostics */
@@ -215,118 +512,69 @@
 .vc-saf-diagnostics {
     display: flex;
     flex-direction: column;
-    gap: 0.5em;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-subtle, rgb(128 128 128 / 20%));
 }
 
-.vc-saf-diagnostics-toggle {
+.vc-saf-diag-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.vc-saf-disclosure {
     all: unset;
     cursor: pointer;
-    color: var(--text-link, var(--text-normal));
+    font-weight: 600;
+    color: var(--text-default);
 }
 
-.vc-saf-diagnostics-body {
+.vc-saf-disclosure:focus-visible {
+    outline: 2px solid var(--focus-primary, #00b0f4);
+}
+
+.vc-saf-diag-body {
     display: flex;
     flex-direction: column;
-    gap: 0.25em;
+    gap: 6px;
+    font-size: 13px;
 }
 
 .vc-saf-diag-row {
-    display: flex;
-    gap: 0.6em;
+    display: grid;
+    grid-template-columns: minmax(110px, 160px) 1fr;
+    gap: 12px;
 }
 
 .vc-saf-diag-label {
-    flex: 0 0 190px;
-    color: var(--text-muted, var(--text-normal));
+    color: var(--text-muted);
 }
 
 .vc-saf-diag-value {
-    flex: 1 1 auto;
-    word-break: break-all;
+    color: var(--text-default);
+    overflow-wrap: anywhere;
+    font-family: var(--font-code, monospace);
+    font-size: 12px;
 }
 
 .vc-saf-diag-actions {
     display: flex;
-    gap: 0.5em;
+    gap: 8px;
     flex-wrap: wrap;
+    margin-top: 4px;
 }
 
 .vc-saf-diag-pre {
     margin: 0;
-    padding: 0.5em;
+    padding: 8px;
     max-height: 200px;
     overflow: auto;
     border-radius: 6px;
-    background: var(--background-tertiary, var(--background-secondary));
-    font-size: 0.75rem;
+    background: var(--background-mod-subtle, rgb(128 128 128 / 12%));
+    color: var(--text-default);
+    font-size: 12px;
     white-space: pre-wrap;
-}
-
-.vc-saf-diag-hint {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5em;
-    padding: 0.5em;
-    border-radius: 8px;
-    background: var(--background-mod-subtle, var(--background-secondary));
-}
-
-/* ------------------------------------------------------------ floating UI */
-
-.vc-saf-floating-root {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 2000;
-}
-
-.vc-saf-floating {
-    position: fixed;
-    width: 400px;
-    max-width: calc(100vw - 32px);
-    max-height: 70vh;
-    display: flex;
-    flex-direction: column;
-    pointer-events: auto;
-    border-radius: 10px;
-    border: 1px solid var(--border-subtle, var(--background-modifier-accent));
-    background: var(--background-base-low, var(--background-primary));
-    box-shadow: 0 8px 24px rgb(0 0 0 / 40%);
-    overflow: hidden;
-}
-
-.vc-saf-floating[data-collapsed="true"] {
-    width: 240px;
-}
-
-.vc-saf-floating-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5em;
-    padding: 0.4em 0.5em;
-    cursor: move;
-    background: var(--background-mod-subtle, var(--background-secondary));
-}
-
-.vc-saf-floating-btn {
-    all: unset;
-    cursor: pointer;
-    padding: 0 0.35em;
-    border-radius: 4px;
-    color: var(--text-muted, var(--text-normal));
-}
-
-.vc-saf-floating-btn:hover {
-    background: var(--background-modifier-hover, var(--background-tertiary));
-    color: var(--text-normal);
-}
-
-.vc-saf-floating-body {
-    padding: 0.6em;
-    overflow: hidden auto;
-}
-
-.vc-saf-panel-icon {
-    display: block;
 }

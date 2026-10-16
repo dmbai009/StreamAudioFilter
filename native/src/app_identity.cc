@@ -98,6 +98,10 @@ std::vector<AppGroup> groupSessions(const std::vector<SessionInfo>& sessions, co
             group.pids.push_back(session.pid);
         }
         group.sessionIds.push_back(session.sessionId);
+        if (!session.deviceName.empty() && std::find(group.devices.begin(), group.devices.end(), session.deviceName) == group.devices.end()) {
+            if (session.playing) group.devices.insert(group.devices.begin(), session.deviceName);
+            else group.devices.push_back(session.deviceName);
+        }
 
         // A group is playing when at least one of its sessions is active.
         group.playing = group.playing || session.playing;
@@ -131,6 +135,126 @@ std::vector<AppGroup> groupSessions(const std::vector<SessionInfo>& sessions, co
     });
 
     return result;
+}
+
+namespace {
+
+using ParentMap = std::map<uint32_t, uint32_t>;
+
+ParentMap parentMap(const std::vector<ProcessNode>& tree) {
+    ParentMap parents;
+    for (const auto& node : tree) parents[node.pid] = node.parentPid;
+    return parents;
+}
+
+bool inTree(uint32_t pid, uint32_t ancestor, const ParentMap& parents) {
+    if (pid == 0 || ancestor == 0) return false;
+    if (pid == ancestor) return true;
+    std::set<uint32_t> visited;
+    uint32_t current = pid;
+    for (size_t guard = 0; guard <= parents.size(); guard++) {
+        const auto it = parents.find(current);
+        if (it == parents.end() || it->second == 0 || it->second == current) return false;
+        if (it->second == ancestor) return true;
+        if (!visited.insert(it->second).second) return false;  // cycle
+        current = it->second;
+    }
+    return false;
+}
+
+/** Strictly below: a root never "covers" itself. */
+bool strictlyBelow(uint32_t pid, uint32_t ancestor, const ParentMap& parents) {
+    return pid != ancestor && inTree(pid, ancestor, parents);
+}
+
+} // namespace
+
+bool isInProcessTree(uint32_t pid, uint32_t ancestor, const std::vector<ProcessNode>& tree) {
+    return inTree(pid, ancestor, parentMap(tree));
+}
+
+void protectProcessTrees(std::vector<AppGroup>& groups, const std::vector<ProcessNode>& tree,
+    const std::vector<uint32_t>& protectedRoots, const std::string& reason) {
+    if (protectedRoots.empty()) return;
+    const ParentMap parents = parentMap(tree);
+    for (auto& group : groups) {
+        const bool inside = std::any_of(group.pids.begin(), group.pids.end(), [&](uint32_t pid) {
+            return std::any_of(protectedRoots.begin(), protectedRoots.end(), [&](uint32_t root) { return inTree(pid, root, parents); });
+        });
+        if (!inside) continue;
+        group.capturable = false;
+        group.notCapturableReason = reason;
+    }
+}
+
+std::map<std::string, CapturePlan> planCaptures(const std::vector<AppGroup>& groups, const std::vector<ProcessNode>& tree,
+    const std::function<bool(const std::string&)>& transmit) {
+    const ParentMap parents = parentMap(tree);
+
+    auto wanted = [&](const AppGroup& group) {
+        return group.capturable && !group.roots.empty() && transmit(group.appKey);
+    };
+
+    std::map<std::string, CapturePlan> plans;
+
+    // 1. Block every transmitted application that has a process of a
+    //    non transmitted one inside one of its trees.
+    for (const auto& group : groups) {
+        if (!wanted(group)) continue;
+        CapturePlan& plan = plans[group.appKey];
+        for (const auto& other : groups) {
+            if (&other == &group || wanted(other)) continue;
+            for (uint32_t root : group.roots) {
+                const bool leaks = std::any_of(other.pids.begin(), other.pids.end(), [&](uint32_t pid) {
+                    return strictlyBelow(pid, root, parents);
+                });
+                if (!leaks) continue;
+                plan.blockedReason = other.displayName + " runs inside the process tree of " + group.displayName
+                    + " and is not transmitted. Windows can only capture whole process trees, so " + group.displayName
+                    + " is not sent either: otherwise the audio of " + other.displayName + " would reach the viewers.";
+                break;
+            }
+            if (!plan.blockedReason.empty()) break;
+        }
+    }
+
+    // 2. Drop roots that sit below the root of another (unblocked) capture.
+    struct RootOwner {
+        uint32_t pid;
+        const AppGroup* group;
+    };
+    std::vector<RootOwner> active;
+    for (const auto& group : groups) {
+        if (!wanted(group) || !plans[group.appKey].blockedReason.empty()) continue;
+        for (uint32_t root : group.roots) active.push_back({ root, &group });
+    }
+
+    for (const auto& group : groups) {
+        if (!wanted(group)) continue;
+        CapturePlan& plan = plans[group.appKey];
+        if (!plan.blockedReason.empty()) continue;
+
+        for (uint32_t root : group.roots) {
+            const RootOwner* cover = nullptr;
+            for (const auto& owner : active) {
+                if (owner.group == &group) continue;  // same app: computeCaptureRoots already merged
+                if (strictlyBelow(root, owner.pid, parents)) {
+                    cover = &owner;
+                    break;
+                }
+            }
+            if (cover) {
+                if (plan.coveredBy.empty()) plan.coveredBy = cover->group->displayName;
+            } else {
+                plan.roots.push_back(root);
+            }
+        }
+        // Partially covered applications keep their own capture for the rest:
+        // only report "covered" when nothing of their own is captured.
+        if (!plan.roots.empty()) plan.coveredBy.clear();
+    }
+
+    return plans;
 }
 
 } // namespace saf

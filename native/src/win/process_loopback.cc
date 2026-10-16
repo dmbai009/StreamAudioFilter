@@ -23,6 +23,7 @@
 
 #include <audioclient.h>
 #include <audioclientactivationparams.h>
+#include <audiopolicy.h>
 #include <mmdeviceapi.h>
 #include <propidl.h>
 #include <windows.h>
@@ -156,8 +157,13 @@ public:
 
     void stop() override {
         running_ = false;
-        if (stopEvent_) SetEvent(stopEvent_);
-        if (captureEvent_) SetEvent(captureEvent_);
+        {
+            // The handles are created by the capture thread: read them under
+            // the same lock it uses.
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopEvent_) SetEvent(stopEvent_);
+            if (captureEvent_) SetEvent(captureEvent_);
+        }
         if (thread_.joinable()) thread_.join();
 
         {
@@ -181,6 +187,10 @@ public:
     }
 
     int latencyMs() const override { return latencyMs_; }
+
+    bool alive() const override { return !died_; }
+
+    float inputPeak() const override { return inputPeak_.load(); }
 
     std::string lastError() const override {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -304,6 +314,8 @@ private:
         WAVEFORMATEXTENSIBLE preferred;
         makeFloatFormat(preferred, request_.sampleRate, request_.channels);
 
+        // Process loopback clients refuse AUDCLNT_STREAMFLAGS_NOPERSIST; the
+        // level the capture is scaled with is reset by resetOwnSessionLevels().
         const DWORD flags = AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
             | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
 
@@ -333,8 +345,11 @@ private:
             return hr;
         }
 
+
         UINT32 bufferFrames = 0;
-        if (SUCCEEDED(client->GetBufferSize(&bufferFrames)) && request_.sampleRate > 0) {
+        // Process loopback clients report nonsense buffer sizes (seen: billions
+        // of frames); only a plausible value is shown as a latency.
+        if (SUCCEEDED(client->GetBufferSize(&bufferFrames)) && request_.sampleRate > 0 && bufferFrames <= static_cast<UINT32>(request_.sampleRate)) {
             latencyMs_ = static_cast<int>(bufferFrames * 1000 / static_cast<unsigned>(request_.sampleRate));
         }
         return S_OK;
@@ -370,6 +385,16 @@ private:
 
     /** Converts an engine buffer and appends it to the ring buffer. */
     void push(const BYTE* data, UINT32 frames, bool silent) {
+        if (!silent && data && !needsConversion_) {
+            const float* samples = reinterpret_cast<const float*>(data);
+            for (UINT32 i = 0; i < frames * static_cast<UINT32>(request_.channels); i++) windowPeak_ = std::max(windowPeak_, std::fabs(samples[i]));
+        }
+        windowFrames_ += frames;
+        if (windowFrames_ >= static_cast<uint32_t>(request_.sampleRate / 2)) {
+            inputPeak_ = windowPeak_;
+            windowPeak_ = 0.0f;
+            windowFrames_ = 0;
+        }
         if (silent || !data) {
             pushSilence(frames);
             return;
@@ -416,6 +441,12 @@ private:
     FloatRingBuffer buffer_;
     std::thread thread_;
     std::atomic<bool> running_ { false };
+    /** The capture thread ended on its own (error), not through stop(). */
+    std::atomic<bool> died_ { false };
+    /** Peak of the last ~0.5 s of captured data, before any conversion. */
+    std::atomic<float> inputPeak_ { 0.0f };
+    float windowPeak_ = 0.0f;
+    uint32_t windowFrames_ = 0;
     HANDLE stopEvent_ = nullptr;
     HANDLE captureEvent_ = nullptr;
 
@@ -465,6 +496,9 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
         return;
     }
 
+    // Every COM object of this thread lives in this scope, so all of them are
+    // released before CoUninitialize below.
+    [&] {
     ComPtr<IAudioClient> client;
     ComPtr<IAudioCaptureClient> captureClient;
     HRESULT hr = activate(client, error);
@@ -489,7 +523,6 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
         if (error.empty()) error = "[capture-start] " + formatHresult(hr, "the capture could not be started");
         setError(error);
         ready.set_value(error);
-        if (comOwned) CoUninitialize();
         return;
     }
 
@@ -500,7 +533,11 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
     while (running_) {
         const DWORD wait = WaitForSingleObject(captureEvent_, 200);
         if (!running_) break;
-        if (wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT) break;
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT) {
+            setError("[wait] the capture event could not be waited on");
+            died_ = true;
+            break;
+        }
 
         UINT32 packetFrames = 0;
         while (SUCCEEDED(captureClient->GetNextPacketSize(&packetFrames)) && packetFrames > 0) {
@@ -513,6 +550,7 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
             if (FAILED(hr)) {
                 if (hr == AUDCLNT_E_DEVICE_INVALIDATED || hr == AUDCLNT_E_RESOURCES_INVALIDATED) {
                     setError("[device-changed] " + formatHresult(hr, "the audio device changed during the capture"));
+                    died_ = true;
                     running_ = false;
                 } else if (hr != AUDCLNT_S_BUFFER_EMPTY) {
                     setError("[data] " + formatHresult(hr, "the capture buffer could not be read"));
@@ -526,6 +564,8 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
     }
 
     if (client) client->Stop();
+    }();
+
     if (comOwned) CoUninitialize();
 }
 
@@ -537,10 +577,50 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
  * The process tree filter covers the children of that root, which is why a
  * single activation captures e.g. every process of Chrome.
  */
+/**
+ * Process loopback delivers an application's audio scaled by the volume and
+ * mute of the *capturing* process' own session on the device that application
+ * plays on. Windows remembers that session state per executable and device,
+ * so a mute that was ever set for saf-audio-host.exe (versions before 0.2
+ * muted their output as the default session) silences every capture of
+ * applications on that device. Measured: the installed host captured only
+ * silence from Chrome on a device where its session was remembered as muted,
+ * the same binary in another folder captured Chrome at its exact level.
+ *
+ * So before captures are made, this process' default session is set to
+ * unmuted, full volume on every output device. The host's output uses a
+ * session of its own (render_sink.cc), so this never touches it.
+ */
+void resetOwnSessionLevels() {
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    {
+        ComPtr<IMMDeviceEnumerator> enumerator;
+        ComPtr<IMMDeviceCollection> devices;
+        UINT count = 0;
+        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(enumerator.put())))
+            && SUCCEEDED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, devices.put())) && SUCCEEDED(devices->GetCount(&count))) {
+            for (UINT i = 0; i < count; i++) {
+                ComPtr<IMMDevice> device;
+                ComPtr<IAudioSessionManager> manager;
+                ComPtr<ISimpleAudioVolume> volume;
+                if (FAILED(devices->Item(i, device.put()))) continue;
+                if (FAILED(device->Activate(__uuidof(IAudioSessionManager), CLSCTX_ALL, nullptr, manager.putVoid()))) continue;
+                if (FAILED(manager->GetSimpleAudioVolume(nullptr, 0, volume.put())) || !volume) continue;
+                // Set unconditionally: a session that is not active yet can
+                // report "not muted" and still carry the remembered mute.
+                volume->SetMute(FALSE, nullptr);
+                volume->SetMasterVolume(1.0f, nullptr);
+            }
+        }
+    }
+    if (SUCCEEDED(com)) CoUninitialize();
+}
+
 class WasapiCaptureFactory : public ICaptureFactory {
 public:
     std::unique_ptr<ICaptureSource> create(const CaptureRequest& request) override {
         if (request.rootPids.empty()) return nullptr;
+        resetOwnSessionLevels();
         if (request.rootPids.size() > 1) {
             // Should not happen: the grouping factory splits first. Capturing
             // only the first tree would silently lose the other instances, so

@@ -100,9 +100,35 @@ MockCaptureSource::MockCaptureSource(std::string appKey, int sampleRate, int cha
     scratch_.assign(static_cast<size_t>(channels) * 480, 0.0f);
 }
 
-MockCaptureSource::~MockCaptureSource() { stop(); }
+namespace {
+std::mutex g_capturesMutex;
+std::vector<MockCaptureSource*> g_captures;
+} // namespace
+
+MockCaptureSource::~MockCaptureSource() {
+    {
+        std::lock_guard<std::mutex> lock(g_capturesMutex);
+        g_captures.erase(std::remove(g_captures.begin(), g_captures.end(), this), g_captures.end());
+    }
+    stop();
+}
+
+size_t killCaptures(uint32_t rootPid) {
+    std::lock_guard<std::mutex> lock(g_capturesMutex);
+    size_t killed = 0;
+    for (auto* capture : g_captures) {
+        if (capture->rootPid() != rootPid || !capture->alive()) continue;
+        capture->kill();
+        killed++;
+    }
+    return killed;
+}
 
 bool MockCaptureSource::start(std::string&) {
+    {
+        std::lock_guard<std::mutex> lock(g_capturesMutex);
+        g_captures.push_back(this);
+    }
     running_ = true;
     thread_ = std::thread([this] { threadMain(); });
     return true;

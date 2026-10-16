@@ -39,6 +39,22 @@ struct EngineOptions {
     int reconcileMs = 2000;
     /** How often the watch thread checks the change flag. */
     int changeCheckMs = 250;
+
+    /**
+     * true: no internal mix thread. The output device drives the mix through
+     * pull(), so the mix follows the device clock (no drift, no growing delay).
+     */
+    bool externalClock = false;
+    /** Pull mode: per application jitter cushion and backlog cap. */
+    int primeMs = 20;
+    int maxBacklogMs = 120;
+
+    /** Audio sessions of this process are ignored (the host's own output). */
+    uint32_t selfPid = 0;
+    /** ... and of every process of this executable (the render process). */
+    std::string selfExePath;
+    /** Process trees that are never captured, whatever the rules say (Discord). */
+    std::vector<uint32_t> protectedRoots;
 };
 
 /** The user's intent, as sent by the UI. */
@@ -90,8 +106,27 @@ struct AppView {
     std::string notCapturableReason;
     uint64_t starvedFrames = 0;
 
-    /** One of: transmitting, excluded, silent, error, unsupported, closed. */
+    /**
+     * One of: transmitting, covered, excluded, blocked, silent, error,
+     * unsupported.
+     */
     std::string state;
+    /** state == blocked: why this application can not be sent. */
+    std::string blockedReason;
+    /** state == covered: the application whose capture already contains it. */
+    std::string coveredBy;
+    /** Output devices the application plays on (friendly names). */
+    std::vector<std::string> devices;
+    /**
+     * Windows reports that the application is playing, but its capture has
+     * delivered nothing but silence for seconds. Seen with some virtual audio
+     * devices, which process loopback does not tap: the viewers do not hear
+     * this application, and the user has to be told so.
+     */
+    bool silentCapture = false;
+    /** Diagnostics: the process trees captured, and the level at the capture input. */
+    std::vector<uint32_t> captureRoots;
+    float inputPeak = -1.0f;
     /** Session based: the application is running but has no active stream. */
     bool running = false;
     /**
@@ -147,8 +182,15 @@ public:
 
     EngineStats stats();
 
-    /** Pulls mixed audio for the JS bridge. Returns frames written. */
+    /** Pulls mixed audio from the output ring (internal clock mode). */
     size_t readFrames(float* destination, size_t frames);
+
+    /**
+     * External clock mode: mixes exactly @p frames frames into @p destination.
+     * Must only be called from one thread (the output device thread), and
+     * never concurrently with stop().
+     */
+    size_t pull(float* destination, size_t frames);
 
     std::string describeEnumerator() const;
     std::string describeCaptureBackend() const;
@@ -165,13 +207,23 @@ private:
         /** Number of process trees the capture currently aggregates. */
         size_t instances = 0;
         std::unique_ptr<ICaptureSource> source;
+        /** Owned by the mix thread; never read elsewhere. */
         MixSource mix;
+        /** Written under mutex_ by the watch thread; copied into mix by the mixer. */
+        float wantedGain = 1.0f;
+        /** Published by the mix thread under mutex_, for apps(). */
+        float peak = 0.0f;
+        uint64_t starved = 0;
+        int64_t createdMs = 0;
+        int64_t lastSignalMs = 0;
         bool enteredMix = false;
         bool retired = false;
         std::string startError;
     };
 
     void mixLoop();
+    /** Mixes one block; called by the mix thread or by pull(). */
+    void mixBlock(float* out);
     void watchLoop();
     void applyPlan();
     void collectRetired();
@@ -191,11 +243,17 @@ private:
     std::vector<std::unique_ptr<StreamState>> retired_;
     std::vector<std::string> warnings_;
     std::map<std::string, std::string> startErrors_;
+    std::map<std::string, CapturePlan> plans_;
 
     std::vector<MixSource*> mixList_;
     std::vector<float> blockBuffer_;
 
     std::unique_ptr<FloatRingBuffer> output_;
+
+    // pull() state (output device thread only).
+    std::vector<float> pullBlock_;
+    size_t pullOffset_ = 0;
+    std::atomic<int64_t> lastPullMs_ { 0 };
 
     std::atomic<bool> running_ { false };
     std::atomic<bool> refreshRequested_ { true };

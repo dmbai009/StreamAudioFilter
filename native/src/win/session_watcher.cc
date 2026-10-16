@@ -153,7 +153,7 @@ private:
         if (comOwned) CoUninitialize();
     }
 
-    void collectEndpoint(IAudioSessionManager2* manager, std::vector<SessionInfo>& out) const {
+    void collectEndpoint(IAudioSessionManager2* manager, const std::string& deviceName, std::vector<SessionInfo>& out) const {
         ComPtr<IAudioSessionEnumerator> enumerator;
         if (FAILED(manager->GetSessionEnumerator(enumerator.put())) || !enumerator) return;
 
@@ -168,6 +168,7 @@ private:
             if (FAILED(control->QueryInterface(IID_PPV_ARGS(control2.put()))) || !control2) continue;
 
             SessionInfo info;
+            info.deviceName = deviceName;
             DWORD pid = 0;
             control2->GetProcessId(&pid);
             info.pid = pid;
@@ -195,6 +196,10 @@ private:
 
             if (info.isSystemSounds) {
                 info.displayName = "System sounds";
+                // Played by the audio service itself (pid 0): process loopback
+                // needs a real process, so this session can not be captured.
+                info.capturable = false;
+                info.notCapturableReason = "Windows system sounds are played by the audio service, not by an application, and can not be captured separately.";
                 info.exeName = "system";
             } else {
                 info.exePath = processImagePath(pid);
@@ -263,7 +268,18 @@ private:
             ComPtr<IAudioSessionManager2> manager;
             if (FAILED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, manager.putVoid())) || !manager) continue;
 
-            collectEndpoint(manager.get(), collected);
+            std::string deviceName;
+            ComPtr<IPropertyStore> properties;
+            if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, properties.put())) && properties) {
+                // PKEY_Device_FriendlyName
+                const PROPERTYKEY friendlyName = { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
+                PROPVARIANT value;
+                PropVariantInit(&value);
+                if (SUCCEEDED(properties->GetValue(friendlyName, &value)) && value.vt == VT_LPWSTR) deviceName = toUtf8(value.pwszVal);
+                PropVariantClear(&value);
+            }
+
+            collectEndpoint(manager.get(), deviceName, collected);
         }
 
         // The same session can be enumerated on several endpoints (for example

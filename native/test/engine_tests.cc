@@ -9,6 +9,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <atomic>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -194,12 +196,14 @@ struct EngineFixture {
     mock::MockCaptureFactory* factory = nullptr;
     std::unique_ptr<Engine> engine;
 
-    EngineFixture() {
+    static EngineOptions defaults() { return EngineOptions { 48000, 2, 10, 8, 200, 100, 25 }; }
+
+    explicit EngineFixture(EngineOptions options = defaults()) {
         auto ownedEnumerator = std::make_unique<mock::MockEnumerator>();
         auto ownedFactory = std::make_unique<mock::MockCaptureFactory>();
         enumerator = ownedEnumerator.get();
         factory = ownedFactory.get();
-        engine = std::make_unique<Engine>(EngineOptions { 48000, 2, 10, 8, 200, 100, 25 },
+        engine = std::make_unique<Engine>(options,
                                           std::move(ownedEnumerator),
                                           std::make_unique<GroupingCaptureFactory>(std::move(ownedFactory)));
 
@@ -576,10 +580,20 @@ static void testMultiInstanceEngine() {
     std::printf("  restart took %lld ms, settled levels %.3f / %.3f (one instance reads %.3f, peak sum %.3f)\n",
                 static_cast<long long>(settleMs), windowFirst, windowSecond, referenceLevel, peakSum);
 
-    // The settled state, on a window read after the restart finished.
-    const auto audio = readFrames(*fixture.engine, 9600);
-    const double levelFirst = toneMagnitude(audio, 48000, toneFirst);
-    const double levelSecond = toneMagnitude(audio, 48000, toneSecond);
+    // The settled state, on windows read after the restart finished. The mock
+    // sources run on real time threads: on a loaded CI runner a single window
+    // can lose a few packets (seen: 0.254 / 0.191 on windows-latest), which is
+    // scheduling, not mixing. So the instances must reach their own level in
+    // one of up to five windows, while no window may ever show a doubled one.
+    double levelFirst = 0.0, levelSecond = 0.0, maxSeen = 0.0;
+    for (int attempt = 0; attempt < 5; attempt++) {
+        const auto audio = readFrames(*fixture.engine, 9600);
+        levelFirst = toneMagnitude(audio, 48000, toneFirst);
+        levelSecond = toneMagnitude(audio, 48000, toneSecond);
+        maxSeen = std::max({ maxSeen, levelFirst, levelSecond });
+        if (levelFirst > low && levelFirst < high && levelSecond > low && levelSecond < high) break;
+    }
+    CHECK(maxSeen < 0.45, "no window shows a doubled level (max %.3f)", maxSeen);
     CHECK(levelFirst > low && levelFirst < high && levelSecond > low && levelSecond < high,
           "both instances at their own level (%.3f / %.3f, one instance reads %.3f)", levelFirst, levelSecond, referenceLevel);
     CHECK(std::fabs(levelFirst - levelSecond) < referenceLevel * 0.35, "neither instance is captured twice (%.3f vs %.3f)",
@@ -691,6 +705,242 @@ static void testDiagnostics() {
         "an unknown code must still be quoted: %s", fallback.c_str());
 }
 
+
+// ------------------------------------------------------- process tree planning
+
+static AppGroup makeGroup(const char* key, const char* name, std::vector<uint32_t> pids, std::vector<uint32_t> roots) {
+    AppGroup group;
+    group.appKey = key;
+    group.displayName = name;
+    group.pids = std::move(pids);
+    group.roots = std::move(roots);
+    return group;
+}
+
+static void testTreePlanning() {
+    section("process trees across applications");
+
+    // launcher (10) started game (11); an unrelated player runs at 30.
+    const std::vector<ProcessNode> tree = { { 10, 1 }, { 11, 10 }, { 30, 1 }, { 500, 1 }, { 501, 500 } };
+    std::vector<AppGroup> groups = {
+        makeGroup("exe:launcher", "Launcher", { 10 }, { 10 }),
+        makeGroup("exe:game", "Game", { 11 }, { 11 }),
+        makeGroup("exe:player", "Player", { 30 }, { 30 }),
+    };
+
+    auto plansFor = [&](std::set<std::string> transmitted) {
+        return planCaptures(groups, tree, [&](const std::string& key) { return transmitted.count(key) > 0; });
+    };
+
+    {
+        // The game is excluded but lives inside the launcher's tree: capturing
+        // the launcher would leak the game, so the launcher is blocked.
+        auto plans = plansFor({ "exe:launcher", "exe:player" });
+        CHECK(!plans["exe:launcher"].blockedReason.empty(), "a transmitted parent of an excluded app is blocked");
+        CHECK(plans["exe:launcher"].blockedReason.find("Game") != std::string::npos, "the reason names the excluded app");
+        CHECK(plans["exe:launcher"].roots.empty(), "a blocked application has nothing to capture");
+        CHECK(plans["exe:player"].blockedReason.empty() && plans["exe:player"].roots == std::vector<uint32_t> { 30 },
+              "unrelated applications are unaffected");
+        CHECK(plans.count("exe:game") == 0, "excluded applications get no plan");
+    }
+    {
+        // Both transmitted: the game is already inside the launcher's capture.
+        auto plans = plansFor({ "exe:launcher", "exe:game" });
+        CHECK(plans["exe:launcher"].roots == std::vector<uint32_t> { 10 }, "the parent is captured");
+        CHECK(plans["exe:game"].roots.empty() && plans["exe:game"].coveredBy == "Launcher",
+              "the child is covered, not captured twice");
+    }
+    {
+        // Excluded parent, transmitted child: the child's own tree has nothing
+        // excluded in it.
+        auto plans = plansFor({ "exe:game" });
+        CHECK(plans["exe:game"].blockedReason.empty() && plans["exe:game"].roots == std::vector<uint32_t> { 11 },
+              "a child can be sent on its own while its parent is excluded");
+    }
+    {
+        // An application with one instance under the launcher and one on its own.
+        std::vector<AppGroup> partial = {
+            makeGroup("exe:launcher", "Launcher", { 10 }, { 10 }),
+            makeGroup("exe:game", "Game", { 11, 30 }, { 11, 30 }),
+        };
+        auto plans = planCaptures(partial, tree, [](const std::string&) { return true; });
+        CHECK(plans["exe:game"].roots == std::vector<uint32_t> { 30 } && plans["exe:game"].coveredBy.empty(),
+              "only the uncovered instance gets its own capture");
+    }
+    {
+        // Discord (500) and its voice process (501) are protected.
+        std::vector<AppGroup> withDiscord = groups;
+        withDiscord.push_back(makeGroup("exe:discord", "Discord", { 501 }, { 501 }));
+        protectProcessTrees(withDiscord, tree, { 500 }, "protected");
+        CHECK(!withDiscord.back().capturable && withDiscord.back().notCapturableReason == "protected",
+              "Discord's processes are never capturable");
+        CHECK(withDiscord[0].capturable && withDiscord[2].capturable, "other applications stay capturable");
+
+        // Discord started by the launcher: the launcher must not be captured.
+        const std::vector<ProcessNode> nested = { { 10, 1 }, { 500, 10 }, { 501, 500 } };
+        std::vector<AppGroup> nestedGroups = {
+            makeGroup("exe:launcher", "Launcher", { 10 }, { 10 }),
+            makeGroup("exe:discord", "Discord", { 501 }, { 501 }),
+        };
+        protectProcessTrees(nestedGroups, nested, { 500 }, "protected");
+        auto plans = planCaptures(nestedGroups, nested, [](const std::string&) { return true; });
+        CHECK(!plans["exe:launcher"].blockedReason.empty(), "a launcher that started Discord is blocked (voice would leak)");
+    }
+    CHECK(isInProcessTree(11, 10, tree) && isInProcessTree(10, 10, tree) && !isInProcessTree(10, 11, tree)
+              && !isInProcessTree(999, 10, tree),
+          "process tree membership");
+}
+
+static void testEngineTreeConflicts() {
+    section("engine: excluded child inside a transmitted tree");
+
+    EngineFixture fixture;
+    fixture.enumerator->setApps({ makeApp("exe:launcher", "Launcher", 100, 1), makeApp("exe:game", "Game", 101, 100) });
+
+    RuleSet rules;
+    rules.active = true;
+    rules.mode = RuleSet::Mode::AllExcept;
+    rules.overrides["exe:game"] = false;
+    fixture.engine->setRules(rules);
+
+    CHECK(waitFor([&] {
+        auto apps = fixture.engine->apps();
+        auto* launcher = findApp(apps, "exe:launcher");
+        auto* game = findApp(apps, "exe:game");
+        return launcher && game && launcher->state == "blocked" && !launcher->captured && game->state == "excluded";
+    }), "the launcher is blocked, nothing of the excluded game can leak");
+
+    rules.overrides["exe:game"] = true;
+    fixture.engine->setRules(rules);
+    CHECK(waitFor([&] {
+        auto apps = fixture.engine->apps();
+        auto* launcher = findApp(apps, "exe:launcher");
+        auto* game = findApp(apps, "exe:game");
+        return launcher && game && launcher->captured && game->state == "covered" && !game->captured;
+    }), "allowing the game unblocks the launcher; the game is covered by its capture");
+    CHECK(fixture.engine->stats().activeStreams == 1, "exactly one capture for the shared tree");
+}
+
+static void testHiddenAndProtected() {
+    section("engine: own output hidden, Discord protected");
+
+    EngineOptions options = EngineFixture::defaults();
+    options.selfPid = 300;
+    options.protectedRoots = { 400 };
+    EngineFixture fixture(options);
+    fixture.enumerator->setApps({
+        makeApp("exe:game", "Game", 100, 1),
+        makeApp("exe:host", "Host", 300, 401),
+        makeApp("exe:discord", "Discord", 401, 400),
+    });
+
+    RuleSet rules;
+    rules.active = true;
+    rules.mode = RuleSet::Mode::AllExcept;
+    fixture.engine->setRules(rules);
+
+    CHECK(waitFor([&] {
+        auto apps = fixture.engine->apps();
+        auto* game = findApp(apps, "exe:game");
+        auto* discord = findApp(apps, "exe:discord");
+        return game && game->captured && discord && discord->state == "unsupported" && !discord->captured
+            && !findApp(apps, "exe:host");
+    }), "the host is not listed, Discord is listed but never captured");
+    CHECK(fixture.engine->stats().activeStreams == 1, "only the game is captured");
+}
+
+static void testPullMode() {
+    section("engine: output device clock (pull)");
+
+    EngineOptions options = EngineFixture::defaults();
+    options.externalClock = true;
+    EngineFixture fixture(options);
+    fixture.enumerator->setApps({ makeApp("exe:game", "Game", 100, 1) });
+
+    RuleSet rules;
+    rules.active = true;
+    fixture.engine->setRules(rules);
+    CHECK(waitFor([&] {
+        auto apps = fixture.engine->apps();
+        auto* game = findApp(apps, "exe:game");
+        return game && game->captured;
+    }), "captured in pull mode");
+
+    // Pull like a device would: odd sized chunks, in real time.
+    const double tone = fixture.factory->toneForPid(100);
+    std::vector<float> chunk(441 * 2), recent;
+    const auto start = steady_clock::now();
+    size_t pulled = 0, shortPulls = 0;
+    while (steady_clock::now() - start < milliseconds(800)) {
+        if (fixture.engine->pull(chunk.data(), 441) != 441) shortPulls++;
+        pulled += 441;
+        if (steady_clock::now() - start > milliseconds(500)) recent.insert(recent.end(), chunk.begin(), chunk.end());
+        std::this_thread::sleep_until(start + microseconds(static_cast<long long>(pulled) * 1000000 / 48000));
+    }
+    CHECK(shortPulls == 0, "pull always delivers what is asked (%zu short pulls)", shortPulls);
+    const double level = toneMagnitude(recent, 48000, tone);
+    std::printf("  pull mode level %.3f over %zu frames\n", level, recent.size() / 2);
+    CHECK(level > 0.2 && level < 0.3, "the application is heard at its level through pull (%.3f)", level);
+
+    // No puller: a rule change must still release the capture.
+    rules.overrides["exe:game"] = false;
+    fixture.engine->setRules(rules);
+    CHECK(waitFor([&] { return fixture.engine->stats().activeStreams == 0; }, 2000),
+          "without an output the excluded capture is released anyway");
+}
+
+static void testDeadCaptureRestarts() {
+    section("engine: a capture that dies is replaced");
+
+    EngineFixture fixture;
+    fixture.enumerator->setApps({ makeApp("exe:game", "Game", 100, 1) });
+    RuleSet rules;
+    rules.active = true;
+    fixture.engine->setRules(rules);
+    CHECK(waitFor([&] {
+        auto apps = fixture.engine->apps();
+        auto* game = findApp(apps, "exe:game");
+        return game && game->captured;
+    }), "captured");
+
+    const size_t before = fixture.factory->createdSources();
+    CHECK(mock::killCaptures(100) == 1, "the capture was killed");
+    CHECK(waitFor([&] {
+        auto apps = fixture.engine->apps();
+        auto* game = findApp(apps, "exe:game");
+        return fixture.factory->createdSources() > before && game && game->captured && game->error.empty();
+    }, 4000), "a new capture replaces the dead one (created %zu -> %zu)", before, fixture.factory->createdSources());
+}
+
+static void testAppsWhileRetiring() {
+    section("engine: apps() while captures are retired");
+
+    // Regression for a use after free: apps() used to keep raw stream pointers
+    // past the lock while the watch thread destroyed retired streams.
+    EngineFixture fixture;
+    fixture.enumerator->setApps({ makeApp("exe:a", "A", 100, 1), makeApp("exe:b", "B", 200, 1), makeApp("exe:c", "C", 300, 1) });
+    RuleSet rules;
+    rules.active = true;
+
+    std::atomic<bool> stop { false };
+    std::thread reader([&] {
+        while (!stop) {
+            auto apps = fixture.engine->apps();
+            (void)apps;
+            (void)fixture.engine->stats();
+        }
+    });
+    for (int i = 0; i < 40; i++) {
+        rules.overrides["exe:a"] = (i % 2) == 0;
+        rules.overrides["exe:b"] = (i % 3) == 0;
+        fixture.engine->setRules(rules);
+        std::this_thread::sleep_for(milliseconds(15));
+    }
+    stop = true;
+    reader.join();
+    CHECK(true, "no crash while toggling captures under concurrent apps()");
+}
+
 int main() {
     std::printf("StreamAudioFilter engine tests\n\n");
     testAppIdentity();
@@ -704,6 +954,12 @@ int main() {
     testNestedInstancesOnce();
     testCaptureGate();
     testDiagnostics();
+    testTreePlanning();
+    testEngineTreeConflicts();
+    testHiddenAndProtected();
+    testPullMode();
+    testDeadCaptureRestarts();
+    testAppsWhileRetiring();
     std::printf("\n%d checks, %d failure(s)\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

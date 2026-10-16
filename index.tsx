@@ -7,44 +7,59 @@
 /**
  * StreamAudioFilter — per application audio filtering for screen shares.
  *
- * What it does: the user decides which applications the *viewers* of a screen
- * share hear. Everything else stays exactly as it is — the local playback, the
- * microphone, the voice channel, the system sound settings and the Discord
- * devices are never touched, and no virtual audio device is created.
+ * The user decides which applications the *viewers* of a whole screen share
+ * hear. Local playback, the microphone, the voice channel, the system sound
+ * settings and Discord's devices are never touched, and no virtual audio
+ * device is created.
  *
- * How it works:
- *  1. The renderer hook (stream/intercept.ts) replaces the audio track Discord
- *     would have taken from the system with a track built from the native engine.
- *  2. The native engine (native/) captures the selected applications through
- *     WASAPI process loopback — endpoint independent, so it also works when the
- *     user plays through Voicemeeter, a USB headset or an HDMI sink.
- *  3. Changes to the selection are applied to the running mix immediately; the
- *     screen share itself is never restarted.
- *
- * Configuration is persisted per application (executable path + name), not per
- * process id, so it survives restarts and is never applied to a different app
- * that happens to share a display name.
+ * How it works (details in stream/soundshare.ts and native/src/output_sink.h):
+ *  1. saf-audio-host captures the allowed applications (WASAPI process
+ *     loopback) and plays the mix into a session that is muted locally.
+ *  2. Discord's native voice module captures screen share audio from a
+ *     process id. The patch below hands it the host's pid instead of "the whole
+ *     system", in Discord's hook based mode, which reads the audio before the
+ *     session mute.
+ *  3. Rule changes reach the running mix immediately; the share itself is
+ *     never restarted.
  */
 
 import ErrorBoundary from "@components/ErrorBoundary";
 import definePlugin from "@utils/types";
-import { Menu } from "@webpack/common";
+import { search } from "@webpack";
+import { Menu, SelectedChannelStore, UserStore } from "@webpack/common";
 
 import { store } from "./apps/store";
-import { settings } from "./settings";
-import { installInterceptor, type InterceptorHandle } from "./stream/intercept";
+import { settingHooks, settings } from "./settings";
+import { type GoLiveAction, isOwnStream } from "./stream/soundshare";
 import managedStyle from "./style.css?managed";
 import { AccountPanelButton } from "./ui/AccountPanelButton";
 import { mountFloatingPanel, unmountFloatingPanel } from "./ui/FloatingPanelRoot";
 import { SettingsPanel } from "./ui/SettingsPanel";
 
-let interceptor: InterceptorHandle | null = null;
+function isOwn(action: { streamKey?: unknown; }) {
+    return isOwnStream(action?.streamKey, UserStore?.getCurrentUser?.()?.id);
+}
+
+/** Whether the two replacements below really are in Discord's code. */
+function detectPatches() {
+    const found = (code: string) => {
+        try {
+            return Object.keys(search(code)).length > 0;
+        } catch {
+            return false;
+        }
+    };
+    return { pidHook: found(".soundshareSource("), modeHook: found(".forceHookSoundshare()") };
+}
 
 export default definePlugin({
     name: "StreamAudioFilter",
     description: "Choose which applications the viewers of a screen share hear. Local playback, the microphone and the voice call are never touched.",
-    searchTerms: ["audio", "stream", "screenshare", "wasapi", "sound", "share"],
+    searchTerms: ["audio", "stream", "screenshare", "go live", "wasapi", "sound", "share"],
     tags: ["Voice", "Media"],
+    // Installed by its own installer for exactly this purpose; an explicit
+    // "off" in Vencord's settings is still respected.
+    enabledByDefault: true,
     authors: [{ name: "StreamAudioFilter", id: 0n }],
 
     settings,
@@ -52,6 +67,25 @@ export default definePlugin({
     settingsAboutComponent: SettingsPanel,
 
     patches: [
+        {
+            // MediaEngineStore. The string only exists in this module.
+            find: "getExperimentalSoundshare(){",
+            replacement: [
+                {
+                    // MEDIA_ENGINE_SET_GO_LIVE_SOURCE: the pid Discord captures
+                    // the share audio from (1 = the whole system).
+                    //   d=…getPidFromDesktopSource(i);…({soundshareId:e,soundshareSession:n}=nD(d,r))
+                    match: /(getPidFromDesktopSource\(\i\);.{0,80}?\{soundshareId:\i,soundshareSession:\i\}=\i\()(\i)(,\i\))/,
+                    replace: "$1$self.soundshareSource($2,arguments[0])$3"
+                },
+                {
+                    // The capture method: hook based capture is required while
+                    // the share audio comes from the host (its session is muted).
+                    match: /getExperimentalSoundshare\(\)\{/,
+                    replace: "$&if($self.forceHookSoundshare())return!1;"
+                }
+            ]
+        },
         {
             // The row with Discord's own microphone and headphone buttons in the
             // account panel (bottom left). The anchor is Discord's intl key.
@@ -64,62 +98,52 @@ export default definePlugin({
     ],
 
     flux: {
-        // Discord tells us when a stream starts and ends. The interceptor does
-        // the actual work; these handlers make the state visible even when the
-        // audio request never reaches the renderer (which would be a failure
-        // worth reporting instead of hiding).
-        STREAM_CREATE: () => {
-            store.markStreamStarted();
-            interceptor?.noteStreamStart();
+        VOICE_CHANNEL_SELECT(action: { channelId?: string | null; }) {
+            store.onVoiceChannel(action.channelId);
         },
-        STREAM_DELETE: () => store.onSessionEnd()
+        STREAM_CREATE(action: { streamKey?: string; }) {
+            if (isOwn(action)) store.onOwnStreamStarted();
+        },
+        STREAM_DELETE(action: { streamKey?: string; }) {
+            if (isOwn(action)) store.onOwnStreamEnded();
+        },
+        STREAM_CLOSE(action: { streamKey?: string; }) {
+            if (isOwn(action)) store.onOwnStreamEnded();
+        },
+        MEDIA_ENGINE_SOUNDSHARE_FAILED(action: { errorMessage?: string; }) {
+            store.onSoundshareFailed(String(action.errorMessage ?? ""));
+        }
+    },
+
+    soundshareSource(pid: number | null, action: GoLiveAction | undefined) {
+        return store.soundshareSource(pid, action);
+    },
+
+    forceHookSoundshare() {
+        return store.forceHookSoundshare();
     },
 
     toolboxActions() {
         return (
-            <>
-                <Menu.MenuItem
-                    id="vc-saf-toggle-panel"
-                    label="Stream audio: show the panel"
-                    action={() => {
-                        settings.store.showFloatingPanel = true;
-                        mountFloatingPanel();
-                    }}
-                />
-                <Menu.MenuItem
-                    id="vc-saf-open-filters"
-                    label="Stream audio: reset the filters"
-                    action={() => void store.resetFilters()}
-                />
-            </>
+            <Menu.MenuItem
+                id="vc-saf-toggle-panel"
+                label="Stream audio: floating panel"
+                action={() => { settings.store.showFloatingPanel = !settings.store.showFloatingPanel; }}
+            />
         );
     },
 
     async start() {
-        await store.loadRules();
-
-        interceptor = installInterceptor({
-            isAvailable: () => settings.store.filterEnabled,
-            unavailableReason: () => store.getSnapshot().lastError || "filtering is switched off in the plugin settings",
-            createTrack: () => store.startFilteredTrack(),
-            // Fail closed by default: without this explicit opt-in the plugin
-            // removes the stream audio when the filter can not be applied
-            // instead of letting the viewers hear the excluded applications.
-            allowUnfilteredFallback: () => settings.store.fallbackUnfiltered,
-            onSessionStart: () => store.markStreamStarted(),
-            onSessionEnd: () => store.onSessionEnd(),
-            onProblem: (message, kind) => kind === "error" ? store.setLastError(message) : store.setLastWarning(message),
-            onAudioState: (state, reason) => store.onAudioState(state, reason)
-        });
-
+        settingHooks.floatingPanel = value => value ? mountFloatingPanel() : unmountFloatingPanel();
+        await store.init(detectPatches());
+        store.onVoiceChannel(SelectedChannelStore?.getVoiceChannelId?.() ?? null);
         if (settings.store.showFloatingPanel) mountFloatingPanel();
     },
 
     stop() {
-        interceptor?.uninstall();
-        interceptor = null;
+        settingHooks.floatingPanel = () => { };
         unmountFloatingPanel();
-        void store.stopEngine();
+        void store.shutdown();
     },
 
     AccountPanelButton: ErrorBoundary.wrap(AccountPanelButton, { noop: true })

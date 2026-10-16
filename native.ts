@@ -5,67 +5,212 @@
  */
 
 /**
- *
  * StreamAudioFilter — per application audio filtering for screen shares.
- * Main process side. Everything that needs node/electron lives here:
- *  * loading (and explaining) the native addon,
- *  * the capability probe,
- *  * pulling the mixed PCM for the renderer,
- *  * application icons via Electron's own icon extraction (no extra code).
- * The renderer talks to this file through VencordNative.pluginHelpers
- * .StreamAudioFilter.<method>.
+ * Main process side: starts and talks to the audio host (saf-audio-host.exe).
+ *
+ * The host is a separate process on purpose. Discord takes the share audio
+ * from a *process* (see stream/soundshare.ts), so the filtered mix has to be
+ * played by one; a crash in audio code can not take Discord down with it; and
+ * no native module has to match the Electron version of Discord.
+ *
+ * The host exits on its own when its stdin closes, so it never outlives
+ * Discord. The renderer reaches this file through
+ * VencordNative.pluginHelpers.StreamAudioFilter.<function>.
  */
 
 import { RendererSettings } from "@main/settings";
-import { app, dialog, shell } from "electron";
-import { existsSync, readdirSync } from "fs";
-import { createRequire } from "module";
+import { type ChildProcessWithoutNullStreams, spawn } from "child_process";
+import { app, shell } from "electron";
+import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
 
-import type {
-    AddonInfo,
-    AppInfo,
-    EngineStartOptions,
-    EngineStats,
-    MockApp,
-    NativeEnvironment,
-    RuleSetPayload,
-    StartResult,
-    SupportInfo
-} from "./types";
+import type { AppInfo, HostInfo, HostStats, MockApp, NativeEnvironment, RuleSetPayload, StartResult, SupportInfo } from "./types";
+import { PLUGIN_VERSION, PROTOCOL_VERSION } from "./version";
 
-const require_ = createRequire(__filename);
-
-const ADDON_FILE = "streamaudiofilter.node";
+const HOST_FILE = "saf-audio-host.exe";
 const FOLDER_NAME = "streamAudioFilter";
+const REQUEST_TIMEOUT_MS = 8000;
+const PROBE_TIMEOUT_MS = 15000;
 
-interface AddonApi {
-    start(options: EngineStartOptions): string;
-    stop(): string;
-    setRules(rules: RuleSetPayload): string;
-    apps(): string;
-    stats(): string;
-    readPcm(frames: number): Uint8Array;
-    refresh(): string;
-    probe(backend: string): string;
-    version(): string;
-    setMockApps(apps: MockApp[]): string;
+type Answer = Record<string, any> & { id: number; ok?: boolean; error?: string; };
+
+interface Pending {
+    resolve(answer: Answer): void;
+    timer: NodeJS.Timeout;
 }
 
-interface LoadedAddon {
-    api: AddonApi | null;
-    info: AddonInfo;
+class HostClient {
+    private child: ChildProcessWithoutNullStreams | null = null;
+    private buffer = "";
+    private nextId = 1;
+    private pending = new Map<number, Pending>();
+    private starting: Promise<boolean> | null = null;
+    private backend: "auto" | "mock" = "auto";
+    info: HostInfo = { found: false, running: false, path: "", version: "", protocol: 0, pid: 0, error: "", triedPaths: [] };
+    private iconCache = new Map<string, string | null>();
+    private stderrTail = "";
+
+    /** Starts the host if it is not running. Never throws. */
+    ensure(backend: "auto" | "mock"): Promise<boolean> {
+        if (this.child && this.backend === backend && this.info.running) return Promise.resolve(true);
+        if (this.child && this.backend !== backend) this.stop();
+        if (this.starting) return this.starting;
+        this.starting = this.start(backend).finally(() => { this.starting = null; });
+        return this.starting;
+    }
+
+    private async start(backend: "auto" | "mock"): Promise<boolean> {
+        const tried: string[] = [];
+        const path = candidatePaths().find(candidate => {
+            tried.push(candidate);
+            return existsSync(candidate);
+        });
+        this.info = { found: !!path, running: false, path: path ?? "", version: "", protocol: 0, pid: 0, error: "", triedPaths: tried };
+        if (!path) {
+            this.info.error = `${HOST_FILE} was not found. Install StreamAudioFilter with its installer, or put the file into ${hostDirectory()}.`;
+            return false;
+        }
+
+        const args = ["--protect", String(process.pid)];
+        if (backend === "mock") args.push("--backend", "mock");
+
+        let child: ChildProcessWithoutNullStreams;
+        try {
+            child = spawn(path, args, { stdio: "pipe", windowsHide: true });
+        } catch (error) {
+            this.info.error = `the audio host could not be started: ${(error as Error).message}`;
+            return false;
+        }
+
+        this.child = child;
+        this.backend = backend;
+        this.buffer = "";
+        this.stderrTail = "";
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => this.onData(chunk));
+        child.stderr.setEncoding("utf8");
+        child.stderr.on("data", (chunk: string) => { this.stderrTail = (this.stderrTail + chunk).slice(-2000); });
+        child.on("error", error => this.onExit(`the audio host failed: ${error.message}`));
+        child.on("exit", (code, signal) => this.onExit(`the audio host exited (${signal ?? `code ${code}`})${this.stderrTail ? `: ${this.stderrTail.trim()}` : ""}`));
+
+        const hello = await this.request(["hello"]);
+        if (!hello.ok) {
+            this.info.error = hello.error ?? "the audio host did not answer";
+            this.stop();
+            return false;
+        }
+
+        this.info.version = String(hello.version ?? "");
+        this.info.protocol = Number(hello.protocol ?? 0);
+        this.info.pid = Number(hello.pid ?? 0);
+        if (this.info.protocol !== PROTOCOL_VERSION) {
+            // A host that speaks another protocol would be misread: refuse it
+            // with an explanation instead of guessing.
+            this.info.error = `the audio host ${this.info.version} speaks protocol ${this.info.protocol}, this plugin (${PLUGIN_VERSION}) needs protocol ${PROTOCOL_VERSION}. Reinstall StreamAudioFilter so that both parts come from the same release.`;
+            this.stop();
+            return false;
+        }
+        this.info.running = true;
+        return true;
+    }
+
+    private onData(chunk: string) {
+        this.buffer += chunk;
+        let newline: number;
+        while ((newline = this.buffer.indexOf("\n")) >= 0) {
+            const line = this.buffer.slice(0, newline).trim();
+            this.buffer = this.buffer.slice(newline + 1);
+            if (!line) continue;
+            let answer: Answer;
+            try {
+                answer = JSON.parse(line);
+            } catch {
+                continue;
+            }
+            const pending = this.pending.get(answer.id);
+            if (!pending) continue;
+            this.pending.delete(answer.id);
+            clearTimeout(pending.timer);
+            pending.resolve(answer);
+        }
+    }
+
+    private onExit(reason: string) {
+        if (!this.child) return;
+        this.child = null;
+        this.info = { ...this.info, running: false, pid: 0, error: reason };
+        for (const [id, pending] of this.pending) {
+            clearTimeout(pending.timer);
+            pending.resolve({ id, ok: false, error: reason });
+        }
+        this.pending.clear();
+    }
+
+    /** Sends one command; resolves with { ok: false } instead of rejecting. */
+    request(args: (string | number)[], timeoutMs = REQUEST_TIMEOUT_MS): Promise<Answer> {
+        const { child } = this;
+        if (!child) return Promise.resolve({ id: 0, ok: false, error: this.info.error || "the audio host is not running" });
+
+        const id = this.nextId++;
+        // TAB and newline separate fields and commands: they must never be part
+        // of a value (Windows paths can not contain them anyway).
+        const line = [id, ...args].map(value => String(value).replace(/[\t\r\n]/g, " ")).join("\t") + "\n";
+        return new Promise(resolve => {
+            const timer = setTimeout(() => {
+                this.pending.delete(id);
+                resolve({ id, ok: false, error: `the audio host did not answer "${args[0]}" within ${timeoutMs} ms` });
+            }, timeoutMs);
+            this.pending.set(id, { resolve, timer });
+            try {
+                child.stdin.write(line);
+            } catch (error) {
+                clearTimeout(timer);
+                this.pending.delete(id);
+                resolve({ id, ok: false, error: `the audio host can not be reached: ${(error as Error).message}` });
+            }
+        });
+    }
+
+    stop() {
+        const { child } = this;
+        if (!child) return;
+        // Closing stdin is the regular way to end the host: it stops its
+        // output and captures and exits by itself.
+        try {
+            child.stdin.end();
+        } catch { }
+        const killTimer = setTimeout(() => {
+            try {
+                child.kill();
+            } catch { }
+        }, 3000);
+        child.once("exit", () => clearTimeout(killTimer));
+        this.onExit("stopped");
+        this.info.error = "";
+    }
+
+    async icon(exePath: string): Promise<string | null> {
+        if (!exePath) return null;
+        if (this.iconCache.has(exePath)) return this.iconCache.get(exePath)!;
+        let result: string | null = null;
+        try {
+            const image = await app.getFileIcon(exePath, { size: "normal" });
+            if (image && !image.isEmpty()) result = image.toDataURL();
+        } catch {
+            result = null;
+        }
+        if (this.iconCache.size > 128) this.iconCache.clear();
+        this.iconCache.set(exePath, result);
+        return result;
+    }
 }
 
-let cached: LoadedAddon | null = null;
-let mockActive = false;
-let mockTimer: NodeJS.Timeout | null = null;
-const iconCache = new Map<string, string | null>();
+const host = new HostClient();
+app.on("will-quit", () => host.stop());
 
 /**
- * Vencord's data directory, where the built addon is expected. Keeping the
- * addon outside of node_modules means a Discord/Vencord update can not delete
- * it, and it keeps the plugin usable after an update without a rebuild.
+ * Vencord's data directory. The installer puts the host here, outside of
+ * Discord's and Vencord's own folders, so that their updates can not delete it.
  */
 function dataDir(): string {
     const env = process.env.VENCORD_USER_DATA_DIR;
@@ -75,337 +220,130 @@ function dataDir(): string {
     return join(app.getPath("userData"), "..", "Vencord");
 }
 
-export function addonDirectory(): string {
+function hostDirectory(): string {
     return join(dataDir(), FOLDER_NAME, "native");
 }
 
 function candidatePaths(): string[] {
     const candidates: string[] = [];
-
-    // 1. Explicitly configured path (advanced users).
-    const configured = String((RendererSettings.store as any)?.streamAudioFilterPath ?? "");
+    const configured = String((RendererSettings.store as any)?.plugins?.StreamAudioFilter?.hostPath ?? "").trim();
     if (configured) candidates.push(configured);
-
-    // 2. The recommended location: <Vencord data>/streamAudioFilter/native/.
-    candidates.push(join(addonDirectory(), ADDON_FILE));
-    candidates.push(join(addonDirectory(), "build", "Release", ADDON_FILE));
-
-    // 3. A Vencord source build keeps the userplugins next to dist/.
+    // One folder per version: a new path carries none of the per executable
+    // state Windows remembers (volume, mute) for an older one, and an update
+    // never has to replace an executable that is still running.
+    candidates.push(join(hostDirectory(), PLUGIN_VERSION, HOST_FILE));
+    candidates.push(join(hostDirectory(), HOST_FILE));
+    // A Vencord source build keeps userplugins next to dist/.
     for (const relative of ["..", join("..", ".."), join("..", "..", "..")]) {
-        candidates.push(join(__dirname, relative, "src", "userplugins", "StreamAudioFilter", "native", "build", "Release", ADDON_FILE));
-        candidates.push(join(__dirname, relative, "src", "userplugins", "streamAudioFilter", "native", "build", "Release", ADDON_FILE));
+        candidates.push(join(__dirname, relative, "src", "userplugins", "StreamAudioFilter", "native", "build", "host", HOST_FILE));
     }
-
-    // 4. Next to the addon directory (drag & drop installs).
-    try {
-        for (const entry of readdirSync(join(dataDir(), FOLDER_NAME))) {
-            if (entry.endsWith(".node")) candidates.push(join(dataDir(), FOLDER_NAME, entry));
-        }
-    } catch { }
-
     return candidates;
 }
 
-function loadAddon(force = false): LoadedAddon {
-    if (cached && !force) return cached;
-
-    const info: AddonInfo = {
-        loaded: false,
-        path: "",
-        version: "",
-        error: "",
-        triedPaths: [],
-        napi: 0
-    };
-
-    const errors: string[] = [];
-    for (const candidate of candidatePaths()) {
-        info.triedPaths.push(candidate);
-        if (!existsSync(candidate)) continue;
-
-        try {
-            const api = require_(candidate) as AddonApi;
-            if (typeof api?.readPcm !== "function" || typeof api?.start !== "function") {
-                errors.push(`${candidate}: the addon does not export the expected functions`);
-                continue;
-            }
-
-            info.loaded = true;
-            info.path = candidate;
-            try {
-                const version = JSON.parse(api.version()) as { version: string; napi: number; };
-                info.version = version.version;
-                info.napi = version.napi;
-            } catch { }
-
-            cached = { api, info };
-            return cached;
-        } catch (error) {
-            errors.push(`${candidate}: ${(error as Error)?.message ?? error}`);
-        }
-    }
-
-    info.error = errors.length
-        ? errors.join("\n")
-        : "the native addon was not found — build it with scripts/build-native.ps1 (see the documentation)";
-
-    cached = { api: null, info };
-    return cached;
+function unsupported(reason: string): SupportInfo {
+    return { supported: false, os: process.platform === "win32" ? "Windows" : process.platform, build: 0, reason, detail: "", checks: [], platform: process.platform };
 }
 
-// ------------------------------------------------------------------ environment
+// ------------------------------------------------------------------- exports
 
-export async function getEnvironment(_: unknown): Promise<NativeEnvironment> {
-    const { api, info } = loadAddon();
-
-    let support: SupportInfo;
-    if (api) {
-        try {
-            support = JSON.parse(api.probe("auto")) as SupportInfo;
-        } catch (error) {
-            support = unsupported(`the check failed: ${(error as Error).message}`);
-        }
-    } else {
-        support = unsupported(info.error);
+export async function getEnvironment(_: unknown, backend: "auto" | "mock" = "auto"): Promise<NativeEnvironment> {
+    await host.ensure(backend);
+    let support: SupportInfo = unsupported(host.info.error || "the audio host is not running");
+    if (host.info.running) {
+        const answer = await host.request(["probe"], PROBE_TIMEOUT_MS);
+        support = answer.ok ? answer.support as SupportInfo : unsupported(answer.error ?? "the check failed");
     }
-
     return {
         platform: process.platform,
         arch: process.arch,
         isWindows: process.platform === "win32",
-        addon: info,
+        host: { ...host.info },
         support,
-        dataDir: addonDirectory(),
-        discordExecutable: process.execPath,
-        mock: mockActive
+        hostDir: hostDirectory(),
+        pluginVersion: PLUGIN_VERSION,
+        pluginProtocol: PROTOCOL_VERSION,
+        mock: backend === "mock"
     };
 }
 
-function unsupported(reason: string): SupportInfo {
-    return {
-        supported: false,
-        os: process.platform === "win32" ? "Windows" : process.platform,
-        build: 0,
-        reason,
-        detail: "",
-        checks: [],
-        platform: process.platform
-    };
+/** The pid Discord should take the share audio from (0 when unavailable). */
+export async function ensureHost(_: unknown, backend: "auto" | "mock" = "auto"): Promise<HostInfo> {
+    await host.ensure(backend);
+    return { ...host.info };
 }
 
-export async function probeSupport(_: unknown, backend = "auto"): Promise<SupportInfo> {
-    const { api, info } = loadAddon();
-    if (!api) return unsupported(info.error);
-    try {
-        return JSON.parse(api.probe(backend)) as SupportInfo;
-    } catch (error) {
-        return unsupported(`the check failed: ${(error as Error).message}`);
-    }
-}
-
-export async function getAddonInfo(_: unknown): Promise<AddonInfo> {
-    return loadAddon().info;
-}
-
-/** Reveals the folder the addon is expected in. */
-export async function openAddonFolder(_: unknown): Promise<void> {
-    const directory = addonDirectory();
-    if (!existsSync(directory)) {
-        try {
-            require("fs").mkdirSync(directory, { recursive: true });
-        } catch { }
-    }
-    await shell.openPath(directory);
-}
-
-// ----------------------------------------------------------------------- engine
-
-export async function startEngine(_: unknown, options: EngineStartOptions): Promise<StartResult> {
-    const { api, info } = loadAddon();
-
-    if (!api) {
-        // Without the addon the renderer can still be validated end to end with
-        // the scripted test backend; the UI says so explicitly.
-        if (options.backend === "mock") return { ok: false, error: info.error };
-        return { ok: false, error: info.error };
-    }
-
-    try {
-        const result = JSON.parse(api.start(options)) as StartResult;
-        if (result.ok && options.backend === "mock") startMockScenario();
-        return result;
-    } catch (error) {
-        return { ok: false, error: `could not start the audio engine: ${(error as Error).message}` };
-    }
+export async function startEngine(_: unknown, maxStreams: number, backend: "auto" | "mock" = "auto"): Promise<StartResult> {
+    if (!await host.ensure(backend)) return { ok: false, error: host.info.error };
+    const answer = await host.request(["start", Math.max(1, Math.min(64, Math.round(maxStreams || 12)))]);
+    return { ok: !!answer.ok, error: answer.error, warning: answer.warning };
 }
 
 export async function stopEngine(_: unknown): Promise<StartResult> {
-    stopMockScenario();
-    const { api } = loadAddon();
-    if (!api) return { ok: true };
-    try {
-        return JSON.parse(api.stop()) as StartResult;
-    } catch (error) {
-        return { ok: false, error: `could not stop the engine: ${(error as Error).message}` };
-    }
+    if (!host.info.running) return { ok: true };
+    const answer = await host.request(["stop"]);
+    return { ok: !!answer.ok, error: answer.error };
 }
 
 export async function setRules(_: unknown, rules: RuleSetPayload): Promise<StartResult> {
-    const { api } = loadAddon();
-    if (!api) return { ok: false, error: "the native addon is not loaded" };
-    try {
-        return JSON.parse(api.setRules(rules)) as StartResult;
-    } catch (error) {
-        return { ok: false, error: `could not apply the rules: ${(error as Error).message}` };
-    }
+    const args: (string | number)[] = ["rules", rules.mode, rules.active ? 1 : 0];
+    for (const [key, transmit] of Object.entries(rules.overrides)) args.push(key, transmit ? 1 : 0);
+    const answer = await host.request(args);
+    return { ok: !!answer.ok, error: answer.error };
 }
 
-/**
- * Asks the engine to re-read the application list instead of using the cached
- * one; the "Refresh list" button in the panel uses this.
- */
+export async function setOutput(_: unknown, on: boolean): Promise<StartResult> {
+    const answer = await host.request(["output", on ? 1 : 0]);
+    return { ok: !!answer.ok, error: answer.error, pid: Number(answer.pid ?? 0) };
+}
+
 export async function refreshApps(_: unknown): Promise<StartResult> {
-    const { api } = loadAddon();
-    if (!api) return { ok: false, error: "the native addon is not loaded" };
-    try {
-        return JSON.parse(api.refresh()) as StartResult;
-    } catch (error) {
-        return { ok: false, error: (error as Error).message };
-    }
+    const answer = await host.request(["refresh"]);
+    return { ok: !!answer.ok, error: answer.error };
 }
 
 export async function listApps(_: unknown): Promise<AppInfo[]> {
-    const { api } = loadAddon();
-    if (!api) return [];
-    try {
-        return JSON.parse(api.apps()) as AppInfo[];
-    } catch {
-        return [];
-    }
+    if (!host.info.running) return [];
+    const answer = await host.request(["apps"]);
+    return answer.ok && Array.isArray(answer.apps) ? answer.apps as AppInfo[] : [];
 }
 
-export async function getStats(_: unknown): Promise<EngineStats | null> {
-    const { api } = loadAddon();
-    if (!api) return null;
-    try {
-        return JSON.parse(api.stats()) as EngineStats;
-    } catch {
-        return null;
-    }
+export async function getStats(_: unknown): Promise<HostStats | null> {
+    if (!host.info.running) return null;
+    const answer = await host.request(["stats"]);
+    if (!answer.ok) return null;
+    return { engine: answer.engine ?? null, output: answer.output ?? null };
 }
 
-/**
- * Pulls mixed PCM. The renderer keeps two requests in flight, so the audio
- * never waits for the event loop to come back around.
- */
-export async function readPcm(_: unknown, frames: number): Promise<Uint8Array> {
-    const { api } = loadAddon();
-    if (!api) return new Uint8Array(0);
-    try {
-        return api.readPcm(frames);
-    } catch {
-        return new Uint8Array(0);
-    }
+export async function probeSupport(_: unknown): Promise<SupportInfo> {
+    if (!host.info.running) return unsupported(host.info.error || "the audio host is not running");
+    const answer = await host.request(["probe"], PROBE_TIMEOUT_MS);
+    return answer.ok ? answer.support as SupportInfo : unsupported(answer.error ?? "the check failed");
 }
 
 export async function setMockApps(_: unknown, apps: MockApp[]): Promise<StartResult> {
-    const { api } = loadAddon();
-    if (!api) return { ok: false, error: "the native addon is not loaded" };
-    try {
-        api.setMockApps(apps);
-        return { ok: true };
-    } catch (error) {
-        return { ok: false, error: (error as Error).message };
-    }
+    const encoded = apps.map(a => [a.appKey, a.displayName, a.exePath, a.exeName, a.pid, a.parentPid, a.playing ? 1 : 0, a.capturable ? 1 : 0].join("\x1f"));
+    const answer = await host.request(["mockApps", ...encoded]);
+    return { ok: !!answer.ok, error: answer.error };
 }
 
-// ------------------------------------------------------------------ app icons
+export async function restartHost(_: unknown, backend: "auto" | "mock" = "auto"): Promise<HostInfo> {
+    host.stop();
+    await host.ensure(backend);
+    return { ...host.info };
+}
 
-/**
- * Application icon as a data URL, or null when there is none.
- *
- * Electron already knows how to read icons out of executables, so no PE parser
- * is needed. Results are cached because a preference store is not a bad place
- * for at most a few dozen small images.
- */
+export async function shutdownHost(_: unknown): Promise<void> {
+    host.stop();
+}
+
 export async function getAppIcon(_: unknown, exePath: string): Promise<string | null> {
-    if (!exePath) return null;
-    if (iconCache.has(exePath)) return iconCache.get(exePath)!;
-
-    let result: string | null = null;
-    try {
-        const image = await app.getFileIcon(exePath, { size: "small" });
-        if (image && !image.isEmpty()) result = image.toDataURL();
-    } catch {
-        result = null;
-    }
-
-    if (iconCache.size > 64) iconCache.clear();
-    iconCache.set(exePath, result);
-    return result;
+    return host.icon(exePath);
 }
 
-// ---------------------------------------------------------------- test scenario
-
-/**
- * Test mode: a scripted application list plus a signal generator in the native
- * mock backend. Used to verify the whole pipeline (engine → renderer → track)
- * without WASAPI; never enabled implicitly.
- */
-function startMockScenario(): void {
-    mockActive = true;
-    const scenario: MockApp[] = [
-        { appKey: "mock:game", displayName: "Demo game", exePath: "C:\\Games\\Demo\\demo.exe", exeName: "demo.exe", pid: 4200, parentPid: 1, playing: true, capturable: true },
-        { appKey: "mock:music", displayName: "Demo player", exePath: "C:\\Music\\player.exe", exeName: "player.exe", pid: 4300, parentPid: 1, playing: true, capturable: true },
-        { appKey: "mock:chat", displayName: "Demo chat app", exePath: "C:\\Chat\\chat.exe", exeName: "chat.exe", pid: 4400, parentPid: 1, playing: false, capturable: true }
-    ];
-
-    const { api } = loadAddon();
+export async function openHostFolder(_: unknown): Promise<void> {
+    const directory = hostDirectory();
     try {
-        api?.setMockApps(scenario);
+        mkdirSync(directory, { recursive: true });
     } catch { }
-
-    if (mockTimer) clearInterval(mockTimer);
-    let ticks = 0;
-    mockTimer = setInterval(() => {
-        ticks++;
-        const apps = [...scenario];
-        if (ticks === 2) {
-            // A new application starts playing: mode A must pick it up live.
-            apps.push({ appKey: "mock:new", displayName: "Demo browser", exePath: "C:\\Browser\\browser.exe", exeName: "browser.exe", pid: 4500, parentPid: 1, playing: true, capturable: true });
-        }
-        if (ticks === 4) apps[1].playing = false;
-        try {
-            loadAddon().api?.setMockApps(apps);
-        } catch { }
-    }, 4000);
-}
-
-function stopMockScenario(): void {
-    mockActive = false;
-    if (mockTimer) {
-        clearInterval(mockTimer);
-        mockTimer = null;
-    }
-}
-
-// ------------------------------------------------------------------ dialog glue
-
-/** Explicitly asks before doing anything the user might not expect. */
-export async function confirmAndRevealInstructions(_: unknown): Promise<boolean> {
-    const { response } = await dialog.showMessageBox({
-        type: "question",
-        buttons: ["Show the path", "Cancel"],
-        defaultId: 0,
-        cancelId: 1,
-        title: "StreamAudioFilter",
-        message: "Building the native addon",
-        detail:
-            "The plugin is shipped as source only and downloads nothing from the internet.\n\n"
-            + `Build it yourself with scripts/build-native.ps1, or copy ${ADDON_FILE} to:\n${addonDirectory()}`
-    });
-
-    if (response !== 0) return false;
-    await openAddonFolder(null);
-    return true;
+    await shell.openPath(directory);
 }

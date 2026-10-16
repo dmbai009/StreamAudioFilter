@@ -78,10 +78,15 @@ public:
     FloatRingBuffer* buffer() override { return &buffer_; }
     std::string formatDescription() const override;
     int latencyMs() const override { return 10; }
-    std::string lastError() const override { return {}; }
+    std::string lastError() const override { return dead_ ? "mock: the capture died" : std::string(); }
+    bool alive() const override { return !dead_; }
 
     /** Feeds @p frames frames synchronously (used by tests). */
     void pushFrames(size_t frames);
+
+    /** Simulates a capture that ends on its own (device change); tests only. */
+    void kill() { dead_ = true; running_ = false; }
+    uint32_t rootPid() const { return rootPid_; }
 
 private:
     void threadMain();
@@ -95,8 +100,12 @@ private:
     FloatRingBuffer buffer_;
     std::thread thread_;
     std::atomic<bool> running_ { false };
+    std::atomic<bool> dead_ { false };
     std::vector<float> scratch_;
 };
+
+/** Kills every live mock capture of @p rootPid. Returns how many were killed. */
+size_t killCaptures(uint32_t rootPid);
 
 /**
  * Adds/updates the scripted application list of every live MockEnumerator.

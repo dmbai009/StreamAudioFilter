@@ -41,6 +41,9 @@ struct SessionInfo {
 
     /** Session peak meter, 0..1, or negative when unavailable. */
     float peak = -1.0f;
+
+    /** Friendly name of the output device the session plays on. */
+    std::string deviceName;
 };
 
 /** Process table entry, needed to compute capture roots per application. */
@@ -110,6 +113,16 @@ public:
 
     /** Non empty when the capture died (device removed, access lost, ...). */
     virtual std::string lastError() const { return {}; }
+
+    /**
+     * False once a started capture stopped delivering for good (its thread
+     * ended on an error). The engine replaces such a capture instead of
+     * leaving the application silent for the rest of the share.
+     */
+    virtual bool alive() const { return true; }
+
+    /** Peak (0..1) of the data the capture received recently; -1 when unknown. */
+    virtual float inputPeak() const { return -1.0f; }
 };
 
 class ICaptureFactory {
