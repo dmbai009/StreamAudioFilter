@@ -229,9 +229,16 @@ void Engine::applyPlan() {
 
     // The host's own output is a session too: it must never be listed, and
     // never be captured (it carries the mix itself).
-    if (options_.selfPid != 0) {
+    // ... and so are the render processes of the host (any copy of it).
+    const auto fileName = [](const std::string& path) {
+        const std::string normalised = normalisePath(path);
+        const size_t slash = normalised.find_last_of('\\');
+        return slash == std::string::npos ? normalised : normalised.substr(slash + 1);
+    };
+    const std::string selfExe = fileName(options_.selfExePath);
+    if (options_.selfPid != 0 || !selfExe.empty()) {
         sessions.erase(std::remove_if(sessions.begin(), sessions.end(), [&](const SessionInfo& session) {
-            return session.pid == options_.selfPid;
+            return session.pid == options_.selfPid || (!selfExe.empty() && fileName(session.exePath) == selfExe);
         }), sessions.end());
     }
 

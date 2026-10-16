@@ -43,6 +43,10 @@ struct OutputStatus {
      */
     bool discordAttached = false;
     uint32_t restarts = 0;
+    /** The process that plays the mix: the pid Discord must be pointed at. */
+    uint32_t pid = 0;
+    /** Frames the device asked for while no mixed audio was ready. */
+    uint64_t underrunFrames = 0;
 };
 
 class IOutputSink {
@@ -56,8 +60,14 @@ public:
 };
 
 enum class OutputKind {
-    /** WASAPI render into a muted session (Windows). */
+    /**
+     * WASAPI render into a muted session, in a separate render process
+     * (Windows). Discord hooks the process it takes the share audio from;
+     * keeping the captures out of that process keeps them working.
+     */
     Wasapi,
+    /** The same render inside this process (diagnosis only). */
+    InProcess,
     /** Pulls in real time and discards (tests, non Windows). */
     Null,
 };

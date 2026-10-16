@@ -93,6 +93,9 @@ export interface OutputStats {
     /** Discord's soundshare hook is loaded into the host: Discord reads this audio. */
     discordAttached: boolean;
     restarts: number;
+    /** The render process Discord is pointed at. */
+    pid: number;
+    underrunFrames: number;
 }
 
 export interface HostStats {
@@ -141,6 +144,8 @@ export interface NativeEnvironment {
 
 export interface StartResult {
     ok: boolean;
+    /** setOutput: the render process, i.e. the pid Discord must capture. */
+    pid?: number;
     error?: string;
     warning?: string;
 }

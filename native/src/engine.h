@@ -51,6 +51,8 @@ struct EngineOptions {
 
     /** Audio sessions of this process are ignored (the host's own output). */
     uint32_t selfPid = 0;
+    /** ... and of every process of this executable (the render process). */
+    std::string selfExePath;
     /** Process trees that are never captured, whatever the rules say (Discord). */
     std::vector<uint32_t> protectedRoots;
 };

@@ -289,7 +289,7 @@ export async function setRules(_: unknown, rules: RuleSetPayload): Promise<Start
 
 export async function setOutput(_: unknown, on: boolean): Promise<StartResult> {
     const answer = await host.request(["output", on ? 1 : 0]);
-    return { ok: !!answer.ok, error: answer.error };
+    return { ok: !!answer.ok, error: answer.error, pid: Number(answer.pid ?? 0) };
 }
 
 export async function refreshApps(_: unknown): Promise<StartResult> {
