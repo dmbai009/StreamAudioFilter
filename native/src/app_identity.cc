@@ -98,6 +98,10 @@ std::vector<AppGroup> groupSessions(const std::vector<SessionInfo>& sessions, co
             group.pids.push_back(session.pid);
         }
         group.sessionIds.push_back(session.sessionId);
+        if (!session.deviceName.empty() && std::find(group.devices.begin(), group.devices.end(), session.deviceName) == group.devices.end()) {
+            if (session.playing) group.devices.insert(group.devices.begin(), session.deviceName);
+            else group.devices.push_back(session.deviceName);
+        }
 
         // A group is playing when at least one of its sessions is active.
         group.playing = group.playing || session.playing;

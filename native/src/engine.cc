@@ -11,6 +11,11 @@ namespace saf {
 
 using namespace std::chrono;
 
+namespace {
+int64_t nowMs() { return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count(); }
+constexpr int64_t kSilentCaptureMs = 3000;
+} // namespace
+
 Engine::Engine(EngineOptions options, std::unique_ptr<IAppEnumerator> enumerator, std::unique_ptr<ICaptureFactory> factory)
     : options_(options)
     , enumerator_(std::move(enumerator))
@@ -114,9 +119,11 @@ void Engine::mixBlock(float* out) {
         // Publish the meters, and hand streams whose fade out completed to the
         // watch thread, which owns the (potentially blocking) destruction.
         std::lock_guard<std::mutex> lock(mutex_);
+        const int64_t now = nowMs();
         for (auto& [key, stream] : streams_) {
             if (stream->retired) continue;
             stream->peak = stream->mix.peak;
+            if (stream->mix.peak > 1e-4f) stream->lastSignalMs = now;
             stream->starved = stream->mix.starvedFrames;
             if (stream->mix.finishedFadeOut() && stream->wantedGain <= 0.0f) {
                 stream->retired = true;
@@ -157,7 +164,7 @@ size_t Engine::pull(float* destination, size_t frames) {
         return 0;
     }
 
-    lastPullMs_ = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    lastPullMs_ = nowMs();
     const size_t blockFrames = static_cast<size_t>(mixer_->blockFrames());
     size_t written = 0;
     while (written < frames) {
@@ -203,8 +210,7 @@ void Engine::watchLoop() {
             // Nobody pulls (the output is off): a fade can not run, so streams
             // that are no longer wanted are retired directly. Nothing is heard
             // in that state, so no click is possible either.
-            const int64_t now = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-            if (now - lastPullMs_.load() > 250) {
+            if (nowMs() - lastPullMs_.load() > 250) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 for (auto& [key, stream] : streams_) {
                     if (!stream->retired && stream->wantedGain <= 0.0f) stream->retired = true;
@@ -350,6 +356,8 @@ void Engine::applyPlan() {
             stream->mix.gain = 0.0f;
             stream->mix.gainTarget = 1.0f;
             stream->wantedGain = 1.0f;
+            stream->createdMs = nowMs();
+            stream->lastSignalMs = stream->createdMs;
             // 20 ms fade: audible clicks are impossible, the delay is not.
             stream->mix.rampStep = 1.0f / (0.02f * static_cast<float>(options_.sampleRate));
             if (options_.externalClock) {
@@ -412,6 +420,8 @@ std::vector<AppView> Engine::apps() {
         int latencyMs = -1;
         std::string error;
         float peak = 0.0f;
+        int64_t createdMs = 0;
+        int64_t lastSignalMs = 0;
     };
 
     std::vector<AppGroup> snapshot;
@@ -434,11 +444,17 @@ std::vector<AppView> Engine::apps() {
                 info.error = stream->source->lastError();
             }
             info.peak = stream->peak;
+            info.createdMs = stream->createdMs;
+            info.lastSignalMs = stream->lastSignalMs;
             live[key] = std::move(info);
         }
         errors = startErrors_;
         rules = rules_;
     }
+
+    const int64_t now = nowMs();
+    // Silence only means something while the mix is actually running.
+    const bool mixing = !options_.externalClock || now - lastPullMs_.load() < 500;
 
     std::vector<AppView> result;
     result.reserve(snapshot.size());
@@ -457,6 +473,7 @@ std::vector<AppView> Engine::apps() {
         view.transmitting = rules.active && rules.transmit(group.appKey) && group.capturable;
         view.peak = std::max(group.peak, 0.0f);
         view.instances = group.roots.size();
+        view.devices = group.devices;
 
         const auto planIt = plans.find(group.appKey);
         if (planIt != plans.end()) {
@@ -474,6 +491,8 @@ std::vector<AppView> Engine::apps() {
             view.latencyMs = stream.latencyMs;
             view.error = stream.error;
             if (stream.peak > view.peak) view.peak = stream.peak;
+            view.silentCapture = mixing && stream.captured && group.playing && group.peak > 0.01f
+                && now - stream.createdMs > kSilentCaptureMs && now - stream.lastSignalMs > kSilentCaptureMs;
         }
         const auto errorIt = errors.find(group.appKey);
         if (errorIt != errors.end() && view.error.empty()) view.error = errorIt->second;

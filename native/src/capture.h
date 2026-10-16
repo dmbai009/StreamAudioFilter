@@ -41,6 +41,9 @@ struct SessionInfo {
 
     /** Session peak meter, 0..1, or negative when unavailable. */
     float peak = -1.0f;
+
+    /** Friendly name of the output device the session plays on. */
+    std::string deviceName;
 };
 
 /** Process table entry, needed to compute capture roots per application. */
