@@ -204,7 +204,7 @@ jobs:
                https://vencord.dev/download), or run StreamAudioFilter-Setup.exe.
             3. Replace the contents of %APPDATA%\Vencord\dist\ with Vencord-dist\*.
             4. Put saf-audio-host.exe from the same release into
-                   %APPDATA%\Vencord\streamAudioFilter\native\
+                   %APPDATA%\Vencord\streamAudioFilter\native\<version>\   (e.g. native\0.2.0\)
             5. Start Discord. StreamAudioFilter is enabled by default; its panel
                opens from the button next to the microphone.
 

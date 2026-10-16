@@ -26,13 +26,15 @@ Discord's "Sound" switch off stay silent. Clips are not touched.
 - Per application capture (WASAPI process loopback) needs Windows 10 2004 (19041) or newer.
 - Windows captures **process trees**. An excluded application started by an allowed one (game from a
   launcher) can not be separated: the launcher is then not sent either (shown as "conflict").
-- **Silent captures.** Windows may report an application as playing while its capture contains only
-  silence. Observed on one machine for every application playing into "Line 1 (Virtual Audio Cable)":
-  not only per application capture but the device's plain loopback and even the cable's recording side
-  carried zeros in that state, while the same tone on five other devices was captured exactly. The
-  cause is not known yet. The plugin detects this (`silentCapture`), names the application and device,
-  and does not claim the application is heard. Workaround: play the application through another output
-  device.
+- **Windows remembers volume and mute per executable.** Per application capture delivers an
+  application's audio scaled by the capturing program's own session on that device. Early development
+  builds of the host muted their output as the executable's default session; Windows kept that mute and
+  silenced every capture of that executable path (measured: the same binary captured Chrome exactly from
+  another folder; the same test tool captured a tone on "Line 1 (Virtual Audio Cable)" at 0.000 under its
+  old name and 0.050 under a new one — virtual cables are *not* a limitation). Since 0.2.0 the output uses
+  a session of its own that Windows does not remember, the host resets its capture level before
+  capturing, and it lives in a folder per version. If an application is still captured as silence, the
+  plugin says so by name ("silent capture").
 - Windows system sounds are played by the audio service itself and can not be captured separately.
 - Applications that re-play other applications' audio (VAC Audio Repeater, Voicemeeter, Equalizer APO
   tools) are blocked by default: sending one would send everything it re-plays.

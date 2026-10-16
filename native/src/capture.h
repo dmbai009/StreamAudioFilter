@@ -120,6 +120,9 @@ public:
      * leaving the application silent for the rest of the share.
      */
     virtual bool alive() const { return true; }
+
+    /** Peak (0..1) of the data the capture received recently; -1 when unknown. */
+    virtual float inputPeak() const { return -1.0f; }
 };
 
 class ICaptureFactory {

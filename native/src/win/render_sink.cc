@@ -53,6 +53,8 @@ constexpr REFERENCE_TIME kBufferDuration = 300000;  // 30 ms
 // PKEY_Device_FriendlyName, declared here instead of pulling in
 // functiondiscoverykeys_devpkey.h (which does not build with WIN32_LEAN_AND_MEAN).
 const PROPERTYKEY kDeviceFriendlyName = { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
+// {6E0D2A1C-5A3B-4C2F-9B8E-3F1A7C5D9E21}: the output session of StreamAudioFilter.
+const GUID kOutputSession = { 0x6e0d2a1c, 0x5a3b, 0x4c2f, { 0x9b, 0x8e, 0x3f, 0x1a, 0x7c, 0x5d, 0x9e, 0x21 } };
 constexpr wchar_t kSessionName[] = L"StreamAudioFilter: share audio (muted here)";
 
 } // namespace
@@ -160,8 +162,12 @@ bool RenderSink::startWithSource(Source source, std::string&) {
 
         WAVEFORMATEXTENSIBLE format;
         makeFloatFormat(format, 48000, 2);
-        const DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-        if (FAILED(hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, kBufferDuration, 0, reinterpret_cast<WAVEFORMATEX*>(&format), nullptr))) {
+        // A session of its own (not the default session of the executable),
+        // and not remembered by Windows: the mute below must stay on this one
+        // output and never be applied to the captures of the host.
+        const DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+            | AUDCLNT_STREAMFLAGS_NOPERSIST;
+        if (FAILED(hr = client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, kBufferDuration, 0, reinterpret_cast<WAVEFORMATEX*>(&format), &kOutputSession))) {
             setError(formatHresult(hr, "the output stream could not be initialised"));
             return false;
         }

@@ -339,7 +339,8 @@ Status readStatus(const Paths& paths) {
         const auto values = parseKeyValues(marker);
         if (values.count("version")) status.installedVersion = values.at("version");
     }
-    status.hostPresent = fs::exists(safDir(paths) / L"native" / L"saf-audio-host.exe", ec);
+    status.hostPresent = fs::exists(safDir(paths) / L"native" / L"saf-audio-host.exe", ec)
+        || (!status.installedVersion.empty() && fs::exists(safDir(paths) / L"native" / toWide(status.installedVersion) / L"saf-audio-host.exe", ec));
     status.foreignBackup = fs::exists(vencordDir(paths) / L"dist.saf-backup", ec);
     return status;
 }
@@ -375,7 +376,8 @@ Result install(const Paths& paths, const DiscordInstall& discord, const Payload&
     const fs::path staged = vencord / L"dist.saf-new";
     const fs::path previous = vencord / L"dist.saf-previous";
     const fs::path backup = vencord / L"dist.saf-backup";
-    const fs::path nativeDir = safDir(paths) / L"native";
+    const fs::path nativeRoot = safDir(paths) / L"native";
+    const fs::path nativeDir = nativeRoot / toWide(payload.version);
     const fs::path hostExe = nativeDir / L"saf-audio-host.exe";
     const fs::path hostNew = nativeDir / L"saf-audio-host.exe.new";
     const fs::path hostOld = nativeDir / L"saf-audio-host.exe.old";
@@ -441,7 +443,13 @@ Result install(const Paths& paths, const DiscordInstall& discord, const Payload&
     }
     if (!moveTo(hostNew, hostExe, error)) return fail(error);
     journal.add([hostExe, hostNew] { std::error_code e; fs::rename(hostExe, hostNew, e); });
-    fs::remove(nativeDir / L"streamaudiofilter.node", ec);  // the addon of versions before 0.2
+    // Older versions: the addon of 0.1.x and hosts of other versions (a host
+    // that is still running stays until the next installation).
+    fs::remove(nativeRoot / L"streamaudiofilter.node", ec);
+    fs::remove(nativeRoot / L"saf-audio-host.exe", ec);
+    for (const auto& entry : fs::directory_iterator(nativeRoot, ec)) {
+        if (entry.is_directory() && entry.path().filename() != nativeDir.filename()) fs::remove_all(entry.path(), ec);
+    }
 
     // 7. Vencord's loader in Discord.
     const fs::path appAsar = resources / L"app.asar";

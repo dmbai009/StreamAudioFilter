@@ -66,7 +66,7 @@ function run(p, ...args) {
 }
 
 const dist = p => join(p.appData, "Vencord", "dist");
-const host = p => join(p.appData, "Vencord", "streamAudioFilter", "native", "saf-audio-host.exe");
+const host = p => join(p.appData, "Vencord", "streamAudioFilter", "native", VERSION, "saf-audio-host.exe");
 
 test("lists the newest Discord version", () => {
     const p = profile();
