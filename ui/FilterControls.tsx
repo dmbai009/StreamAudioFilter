@@ -33,8 +33,26 @@ const SHARE_TONE: Record<ShareAudio, "ok" | "info" | "neutral" | "warn" | "dange
     uncontrolled: "danger"
 };
 
+/**
+ * "filtered" says Discord reads the plugin's audio. If an allowed application
+ * is playing but its capture is pure silence, the viewers do not hear it: the
+ * headline must not claim otherwise.
+ */
+function silentAllowedApps(state: StoreState) {
+    return state.apps.filter(app => app.playing && app.captured && app.silentCapture).map(app => app.displayName);
+}
+
 export function ShareStatusCard({ state, compact }: { state: StoreState; compact?: boolean; }) {
     const { audio, reason } = state.share;
+    const silent = audio === "filtered" ? silentAllowedApps(state) : [];
+    if (silent.length) {
+        return (
+            <div className={cl("status")} data-tone="warn" role="status">
+                <div className={cl("status-title")}>{t("share.filteredSilent")}</div>
+                <div className={cl("status-detail")}>{t("share.filteredSilent.detail", { apps: silent.join(", ") })}</div>
+            </div>
+        );
+    }
     return (
         <div className={cl("status")} data-tone={SHARE_TONE[audio]} role="status">
             <div className={cl("status-title")}>{t(`share.${audio}` as I18nKey)}</div>

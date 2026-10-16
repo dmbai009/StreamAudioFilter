@@ -341,7 +341,9 @@ private:
         }
 
         UINT32 bufferFrames = 0;
-        if (SUCCEEDED(client->GetBufferSize(&bufferFrames)) && request_.sampleRate > 0) {
+        // Process loopback clients report nonsense buffer sizes (seen: billions
+        // of frames); only a plausible value is shown as a latency.
+        if (SUCCEEDED(client->GetBufferSize(&bufferFrames)) && request_.sampleRate > 0 && bufferFrames <= static_cast<UINT32>(request_.sampleRate)) {
             latencyMs_ = static_cast<int>(bufferFrames * 1000 / static_cast<unsigned>(request_.sampleRate));
         }
         return S_OK;
