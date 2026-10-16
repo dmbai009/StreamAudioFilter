@@ -1,15 +1,11 @@
 /*
- * StreamAudioFilter — tests for saf-setup.exe on a fake user profile.
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
- *
- * Every scenario runs against a temporary %APPDATA% / %LOCALAPPDATA% with a
- * fake Discord, through the real command line of saf-setup.exe:
- *     node tests/setup.test.mjs <saf-setup.exe> <saf-audio-host.exe>
- * Windows only (the installer is a Windows program).
  */
 
 import assert from "node:assert/strict";
-import { spawnSync, spawn } from "node:child_process";
+import { spawn,spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
