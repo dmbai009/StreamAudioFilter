@@ -32,8 +32,11 @@ What the last run showed:
   compiler error fails the job), then the portable C++ tests compiled and run by the Microsoft compiler
   with the exit code of every `.exe` and the line "0 failure(s)" checked, and finally a check that the
   artifact `streamaudiofilter.node` really exists. The same job builds `process-loopback-probe.exe` with
-  `cl.exe` and runs its `--help` and `--list` paths (a capture cannot be tested on a machine with no
-  audio endpoint: silence there would prove nothing), then uploads both binaries as artifacts. The build log is committed into `ci-out/` (the GitHub
+  `cl.exe` and exercises its non-capture paths (a capture cannot be tested on a machine with no audio
+  endpoint: silence there would prove nothing): `--help`, `--list`, the usage failure of a missing target
+  (exit `2`, the reason on stderr), the text log of `--report`, and the rule that with `--json` stdout
+  carries the machine readable line and nothing else — the `[report] ...` notice used to be printed there
+  as well. Both binaries are then uploaded as artifacts. The build log is committed into `ci-out/` (the GitHub
   Actions logs are not reachable from the network this project was prepared in); the log publication
   step is the only optional one and it cannot hide a failure, because it runs after the build and the
   tests.
@@ -57,13 +60,24 @@ Every item corresponds to a requirement of the original task. The expected resul
    process-loopback-probe.exe --spawn-tone --system --seconds 8    # the same check on the device path
    process-loopback-probe.exe --process <player>.exe --seconds 8   # the real case
    ```
+   Add `--report run.txt` to any of them to keep the same stage log as a UTF-8 text file instead of
+   copying it out of the console. Runs 1–4 were executed on build 19045.7725 on 2026-10-16 and the
+   decisive ones passed (`--spawn-tone` found its tone at a magnitude of `0.198461`, the system loopback
+   control at `0.199965`); the numbers are quoted in [PROBE.md](PROBE.md). What is still open from this
+   list on that machine is the plugin's own "Check support" next to the probe, and OBS's "Application
+   Audio Capture" as an independent control.
    * `--spawn-tone` starts a **second copy of the probe** that plays 1 kHz, and captures *it*: the tone has
      to appear in the capture, because it comes from another process. A missing tone there is a real
      failure and the probe exits `1`.
    * `--spawn-tone --system` performs the same check on the whole system audio, i.e. on the device path:
      finding the tone proves the device and the audio engine deliver what applications play.
-   * `--process <player>` is expected to print `non-zero samples` well above zero while the player is
-     playing. `no audio arrived` with a player that *is* playing is the one result that needs investigation.
+   * `--process <player>` is expected to print `[levels]` lines that say **audio is in it** while the player
+     is playing. Two results that look like success and are not: a `[data]` line with a high frame count
+     and zeros (a stream can be perfectly paced and silent), and a large count of `non-zero samples` — the
+     noise floor of the capture path is made of samples that are not exactly zero (a real run measured
+     580972 of them at -90.2 dBFS from a process with nothing to play). The line that decides is
+     `no audio in it: the peak is below -60 dBFS ...` — the stream works, nothing audible was in the
+     window — and it is reported as *no audio*, never as audio.
    * `--self-tone` (the probe plays *and* captures its own tone) is the weakest form of the check: when the
      tone is missing, the run cannot tell a capture that missed the content apart from a tone that never
      reached the mix of the captured device. The probe says exactly that and never turns it into a
