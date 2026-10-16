@@ -68,6 +68,44 @@ inline void measureInt16(const int16_t* values, size_t count, SampleStats& stats
 }
 
 /**
+ * The level of an amplitude in the -1..1 range, in dBFS (0 dBFS = full scale).
+ * Exact zero is reported as a floor of -200 dB instead of negative infinity, so
+ * that every sample window has a comparable number.
+ */
+inline double dbfs(double amplitude) {
+    if (amplitude <= 0.0) return -200.0;
+    const double value = 20.0 * std::log10(amplitude);
+    return value < -200.0 ? -200.0 : value;
+}
+
+/**
+ * The level below which a window is reported as a noise floor rather than as audio.
+ *
+ * -60 dBFS is a reporting convention, not a statement about any machine, and it
+ * exists because a count of non-zero samples alone cannot tell dither from music:
+ * the real run of the probe on Windows 10 19045 that prompted this line measured
+ * 383520 frames with a peak of -90.2 dBFS and 580972 samples that were not exactly
+ * zero. Reporting that as "the stream carries audio" would have been wrong.
+ */
+inline constexpr double kNoiseFloorDbfs = -60.0;
+
+/** What a measured window contains: nothing, dither, or audio. */
+enum class PacketContent {
+    /** No samples at all, or every one of them exactly zero. */
+    Silent,
+    /** Samples are there, but the peak is below kNoiseFloorDbfs. */
+    NoiseFloor,
+    /** The peak is above kNoiseFloorDbfs. */
+    Audio,
+};
+
+/** Classification of a window, using the same threshold the reports quote. */
+inline PacketContent classifyContent(const SampleStats& stats, double noiseFloorDbfs = kNoiseFloorDbfs) {
+    if (stats.samples == 0 || stats.peak <= 0.0) return PacketContent::Silent;
+    return dbfs(stats.peak) < noiseFloorDbfs ? PacketContent::NoiseFloor : PacketContent::Audio;
+}
+
+/**
  * Goertzel: how much of @p frequency is inside the interleaved samples.
  *
  * @p count counts interleaved samples, @p channels says how many of them form one

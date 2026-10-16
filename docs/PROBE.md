@@ -11,18 +11,20 @@ the addon, so no compiler is needed to get a diagnosis. The source is
 plugin's packet measurement (`native/src/dsp/packet_measure.h`), but nothing else — no Discord, no
 Vencord, no capture engine.
 
-The measurement module is the part that decides whether a capture carries audio or only correctly paced
-zeros, and it is covered by the portable tests (`native/test/dsp_tests.cc`). It counts non-zero samples,
-the peak and the RMS, and it looks for the 1 kHz tone **after downmixing the interleaved channels** — a
-tone searched as if the interleaved buffer were mono lands at half its frequency, which is a mistake this
-probe made itself in its first real runs (see the end of this file).
+The measurement module is the part that decides what a capture actually contains, and it is covered by
+the portable tests (`native/test/dsp_tests.cc`). It counts non-zero samples, the peak and the RMS, reports
+the level in dBFS, classifies a window as **silence / noise floor / audio** at a documented threshold, and
+looks for the 1 kHz tone **after downmixing the interleaved channels** — a tone searched as if the
+interleaved buffer were mono lands at half its frequency, which is a mistake this probe made itself in its
+first real runs (see the end of this file).
 
 ## What it does — and what it refuses to do
 
-It installs nothing, changes no setting, touches no device, and **writes no audio to disk** (there is no
-code path in it that opens a file: samples are counted as they are read and immediately dropped). The
-loudest thing it can do is play a 1 kHz tone from its own process for a few seconds, and only when you
-ask for it with `--self-tone`.
+It installs nothing, changes no setting, touches no device, and **never writes audio anywhere**: samples
+are counted as they are read and immediately dropped. The only file it can create is the text log you ask
+for with `--report <file>` — without that flag it opens no file at all. The loudest thing it can do is
+play a 1 kHz tone for a few seconds, and only when you ask for it (`--self-tone`, `--spawn-tone`, or
+`--tone-only` in a second console).
 
 ## Usage
 
@@ -36,6 +38,7 @@ process-loopback-probe.exe --pid 1234
 process-loopback-probe.exe --process chrome.exe --exclude
 process-loopback-probe.exe --self-tone --system --seconds 8
 process-loopback-probe.exe --process chrome.exe --json
+process-loopback-probe.exe --spawn-tone --seconds 8 --report probe-run.txt
 ```
 
 | Option | Meaning |
@@ -51,15 +54,33 @@ process-loopback-probe.exe --process chrome.exe --json
 | `--exclude` | capture everything *except* the target tree (the mode the plugin uses for "all except selected") |
 | `--seconds <n>` | capture window, 1–300, default 5 |
 | `--json` | one line of machine readable JSON instead of the stage log |
+| `--report <file>` | also write the stage log of this run to this text file (UTF-8). Nothing else is ever written, and without this flag the probe opens no file |
+
+`--report <file>` writes the same stage log to a text file in UTF-8, so a run can be handed over without
+copying anything out of a console window. The file is opened through its wide path, which means a path with
+Cyrillic letters in it works: the command line reaches the program as bytes in the console's code page, so
+a path is read as UTF-8 when the bytes really are UTF-8 and as the ANSI code page otherwise.
+
+Text that is not plain ASCII (device names on a non-English Windows, for example) is converted to the code
+page the console actually uses, so names come out readable instead of as block noise; when the output is a
+file or a pipe, the text stays UTF-8. That conversion is also what `--report` gives you verbatim.
 
 Exit codes: `0` — every stage succeeded; `1` — a stage failed (the stage log names it); `2` — usage
 error (for example no target at all: that prints what to do instead of blaming the audio engine, and the
 `--json` output uses the same three codes).
 
+Usage errors go to **stderr**: a missing target, a typo in an option, an option without its value. With
+`--json` that matters, because stdout then holds exactly one line — the machine readable result — and a
+script can parse it without filtering. `--json` describes a capture run; `--list`, `--playing` and
+`--help` always print text (`--help` to stdout, because it was asked for). The `[report] this run is
+written to ...` notice follows the same rule: it appears on stdout normally and on stderr in `--json`
+mode. That was a real defect: the notice used to be printed to stdout in `--json` mode as well, which put
+a second line in front of the JSON.
+
 `--json` prints one line with `ok`, `pcmArrived`, `toneMagnitude`, `packets`, `frames`, `silentFrames`,
-`nonZeroSamples`, `peak`, `rms`, `format`, `channels`, `toneFrames` (how much this program rendered for
-the check), `toneProcessExit` (the exit code of the `--spawn-tone` child, `-1` when there is none),
-`failureStage`, `failure` and `failures`.
+`nonZeroSamples`, `peak`, `peakDbfs`, `content` (`silent` / `noiseFloor` / `audio`), `rms`, `format`,
+`channels`, `toneFrames` (how much this program rendered for the check), `toneProcessExit` (the exit code
+of the `--spawn-tone` child, `-1` when there is none), `failureStage`, `failure` and `failures`.
 
 ## The stages, and what a failure in each one means
 
@@ -78,22 +99,30 @@ the check), `toneProcessExit` (the exit code of the `--spawn-tone` child, `-1` w
 | `capture-client` | `IAudioCaptureClient` | the client cannot deliver buffers |
 | `buffer-size` | the packet size, **only when the value is plausible** | a process loopback client reports no meaningful packet size; the line says so instead of printing a number (see "What a green run means") |
 | `capture-start` | `SetEventHandle` + `Start` | the stream did not start — the reason is quoted |
-| `data` | packets, frames, frames flagged silent, **non-zero samples**, peak, RMS and the negotiated format | only a stream that carries no samples at all is reported as empty; "packets arrived" and "audio arrived" are counted separately |
+| `data` | packets, frames, frames flagged silent and the negotiated format | only a stream that carries no samples at all is reported as empty; this line says whether the *stream* runs |
+| `levels` | peak (as a number and in dBFS), RMS, the count of non-zero samples, and one short sentence about what the window contains: audio, only a noise floor, or pure silence | the two lines are deliberately short; the earlier single line was 185 characters, and the first report that came back from a real machine lost its second half to line wrapping when it was copied out of the console |
 | `tone` | how much this program rendered, and the 1 kHz magnitude found in the captured audio (Goertzel over the downmixed channels, threshold 0.05) | reported with its numbers and explained; a missing tone is never blamed on the capture when the probe played it itself, and `--spawn-tone` turns it into a verdict |
 | `teardown` | `Stop`, release of every interface, close the apartment | — |
 
 ## Reading the result
 
-* **All stages green and `non-zero samples` > 0** — audio really flows through the capture. Values that
-  are *not* proof: a `data` line with a high frame count, or `0 frames flagged silent`. A process
-  loopback stream does not set the silent flag, so that number says nothing; the count of non-zero
-  samples and the peak are what separate audio from a correctly paced stream of zeros.
+* **All stages green and `[levels]` says audio is in it** — the capture delivered audio: the peak is
+  above -60 dBFS. Values that are *not* proof, and are called out as such in the output: a high frame
+  count, `0 frames flagged silent` (a process loopback stream never sets that flag), and **a large count
+  of non-zero samples**: the noise floor of the capture path is made of samples that are not exactly zero.
+  A real run of this probe measured 580972 non-zero samples at a peak of -90.2 dBFS.
+* **`[levels]` says only a noise floor arrived** — packets came at exactly the right rate and the samples
+  are not zero, but nothing audible was in the window. The stream itself works; the target played nothing
+  audible (or played something far below the threshold). This is the case the level reporting exists for,
+  and it is reported as *no audio*, never as audio. -60 dBFS is a **reporting convention**, not a claim
+  about the machine: it is printed next to the classification so the reading can be judged, and `--json`
+  carries both `peakDbfs` and `content` for anything that wants to apply its own threshold.
 * **`activation-call` fails with `0x8000000E`** — the completion handler was not usable from the calling
   apartment. In this probe that cannot happen any more (it verifies the agility one stage earlier), so
   the output would show `handler: ... yes/no` in the same run.
 * **`activation-call` fails with `E_NOTIMPL` / `E_INVALIDARG`** — the build does not provide this
   activation, or the parameters were rejected. This is the honest "not supported here" case.
-* **`data` reports `no audio arrived`** — the capture works; the chosen process did not play anything
+* **`[levels]` reports pure silence** — the capture works; the chosen process did not play anything
   during the window. `--playing` finds a process that is playing, `--system` checks the path with the
   whole system audio.
 * **`--spawn-tone` says the tone is not in the capture** — this is a real failure (`exit 1`): the tone
@@ -180,11 +209,51 @@ What that proves and what it does not:
   that looks like evidence.
 
 The current build of the probe reports the numbers that make a run interpretable — packets, frames,
-frames flagged silent, non-zero samples, peak and RMS — prints whether any of them is missing
-(`--json` carries the same fields), and adds `--spawn-tone`, `--tone-only`, `--system` and `--playing` so
-that a real answer can be produced without guessing. What is still needed from this machine is listed in
-[REMEDIATION.md](REMEDIATION.md): the `--spawn-tone` runs, which are the ones the earlier readings could
-not deliver.
+frames flagged silent, non-zero samples, peak, RMS and the level in dBFS — prints whether any of them is
+missing (`--json` carries the same fields), and adds `--spawn-tone`, `--tone-only`, `--system`, `--playing`
+and `--report` so that a real answer can be produced without guessing.
+
+### The decisive run (probe v0.1.4, same machine, 2026-10-16)
+
+Numbers as they came back from the user's console, one line per run:
+
+```text
+--spawn-tone --seconds 8      798 packet(s), 383040 frames, peak 0.200000, 760190 non-zero samples
+                              tone process exited with code 0
+                              1 kHz magnitude 0.198461 - the tone is in the capture
+--spawn-tone --system         800 packet(s), 384000 frames, peak 0.200000, 766910 non-zero samples
+                              1 kHz magnitude 0.199965 - the tone is in the system audio
+--process audiorepeater.exe   799 packet(s), 383520 frames, peak 0.000031, 580972 non-zero samples
+                              (the Virtual Audio Cable repeater, with nothing audible to repeat)
+--playing                     default output: Line 1 (Virtual Audio Cable)
+                              six active output devices listed, one active session:
+                              audiorepeater.exe (pid 16696) on "Speakers (Realtek(R) Audio)"
+```
+
+What this establishes, and why it changed the probe:
+
+* **The process loopback capture follows the content of another process on build 19045.** A second copy of
+  the probe played 1 kHz for the whole window; the capture of *that* process reported a peak of exactly
+  0.200000 (the tone's amplitude) and a Goertzel magnitude of `0.198461` for 1 kHz. That is content, not a
+  correctly paced stream of zeros — the question this whole probe exists to answer.
+* **The device path is fine too.** The same check through the whole system loopback on the machine's
+  default output device came back at `0.199965`.
+* **The level reporting exists because of the third run.** `audiorepeater.exe` delivered 580972 samples
+  that were not exactly zero at a peak of `0.000031` — that is −90.2 dBFS, the noise floor of the capture
+  path. Reading that as "audio arrived" would have been wrong, so a window is now reported as *audio* only
+  above −60 dBFS, and the classification is printed next to the numbers it was derived from.
+* **The machine's default output is a virtual cable** (`Line 1`) with a repeater feeding the Realtek
+  speakers. The plugin captures applications and changes no routing, so this does not affect it; a
+  `--system` test on such a line measures what is fed *into* the cable, which the probe now states.
+* **The first report lost the end of its `[data]` line to line wrapping.** The numbers are on their own
+  shorter lines now (`[data]` + two `[levels]` lines, each under ~110 characters), and `--report <file>`
+  writes the same log to a file in UTF-8 so a run can be handed over without going through a console
+  window at all. Non-ASCII device names are converted to the console's code page instead of being printed
+  as UTF-8 into a code page 866 console, which is what turned the Steam device names into block noise in
+  that same run.
+
+What is still needed from this machine is listed in [REMEDIATION.md](REMEDIATION.md): the plugin's own
+support check and the OBS control next to it, and then the Discord interception experiment (stage 4).
 
 ## Building it yourself
 

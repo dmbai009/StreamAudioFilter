@@ -161,13 +161,16 @@ jobs:
           **\`process-loopback-probe.exe\` — the diagnosis without Discord.** A console program that
           performs the same process loopback activation the plugin uses (with the same agile completion
           handler), prints every stage with its HRESULT, and measures what really arrives: packets,
-          frames, frames flagged silent, **non-zero samples**, peak and RMS. It installs nothing, changes
-          no setting and writes no audio to disk:\`\`\`
+          frames, frames flagged silent, **non-zero samples**, the peak in dBFS, and whether the window
+          contains audio, only a noise floor, or silence. It installs nothing, changes no setting and
+          writes no audio anywhere; the only file it can create is the text log you ask for with
+          \`--report <file>\`:\`\`\`
 
               process-loopback-probe.exe --playing                           (who is playing right now)
               process-loopback-probe.exe --spawn-tone --seconds 8            (decisive: a second process plays the tone)
               process-loopback-probe.exe --spawn-tone --system --seconds 8   (the same check on the device path)
               process-loopback-probe.exe --process spotify.exe --seconds 8   (the real case)
+              process-loopback-probe.exe --spawn-tone --seconds 8 --report run.txt   (keep the log in a file)
 
           \`\`\`Use it before reporting a capture problem. A run whose \`data\` line shows non-zero samples
           means audio really flows; a red stage names the step and the HRESULT that refused it. Two
