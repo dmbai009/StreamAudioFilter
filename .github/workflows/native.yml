@@ -153,7 +153,7 @@ jobs:
           if errorlevel 1 exit /b 1
           echo probe built (usage path answers)
 
-      - name: Probe smoke test (process list only)
+      - name: Probe smoke test (lists, usage and report file only)
         shell: cmd
         run: |
           cd native
@@ -164,6 +164,46 @@ jobs:
           build\probe\process-loopback-probe.exe --list >nul
           if errorlevel 1 exit /b 1
           echo the probe starts and enumerates processes
+
+          rem What is checked below is the reporting core, which every diagnosis from
+          rem a user's machine goes through: the stage log reaches a file as UTF-8,
+          rem the usage failures exit with 2 on stderr, and with --json the one
+          rem machine readable line is the only thing on stdout. The last one is a
+          rem real defect that was fixed: the "[report] this run is written to ..."
+          rem notice used to be printed to stdout in --json mode as well, which put
+          rem a second line in front of the JSON.
+          del /q probe-report.txt probe-stdout.txt probe-stderr.txt 2>nul
+          build\probe\process-loopback-probe.exe --json --report probe-report.txt > probe-stdout.txt 2> probe-stderr.txt
+          if errorlevel 3 exit /b 1
+          if not errorlevel 2 exit /b 1
+          echo the missing target exits with 2
+          if not exist probe-report.txt (
+              echo === the report file was not written ===
+              exit /b 1
+          )
+          findstr /C:"--playing" probe-report.txt >nul
+          if errorlevel 1 (
+              echo === the report file does not contain the usage text ===
+              exit /b 1
+          )
+          findstr /C:"[report]" probe-stdout.txt >nul
+          if not errorlevel 1 (
+              echo ::error title=probe stdout contract::with --json, stdout must carry the JSON line and nothing else
+              type probe-stdout.txt
+              exit /b 1
+          )
+          findstr /C:"--playing" probe-stderr.txt >nul
+          if errorlevel 1 (
+              echo === the usage error did not reach stderr ===
+              exit /b 1
+          )
+          rem The report file is not empty and no audio was written: it is a text log.
+          findstr /C:"no audio is written" probe-report.txt >nul
+          if errorlevel 1 (
+              echo === the report file is not a text log ===
+              exit /b 1
+          )
+          echo the report file, the stderr usage path and the --json stdout contract are intact
 
       - name: Portable tests compiled and run by cl.exe
         shell: cmd

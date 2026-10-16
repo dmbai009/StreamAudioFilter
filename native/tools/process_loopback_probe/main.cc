@@ -49,6 +49,7 @@
 #include <winternl.h>
 
 #include <atomic>
+#include <cstdarg>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -133,16 +134,153 @@ private:
 
 bool g_json = false;
 int g_failures = 0;
+/** The text log of this run, opened only when the user asks for one (--report). */
+std::FILE* g_report = nullptr;
+
+/**
+ * Text a Windows console can actually show.
+ *
+ * A console is not UTF-8 unless it was told to be: the device names on a Russian
+ * Windows ("Dinamiki (Steam Streaming Speakers)", Cyrillic in the real name) printed
+ * as UTF-8 into a code page 866 console come out as block noise. The text is
+ * therefore converted to the code page the console reports; pure ASCII - which is
+ * almost all of this program's output - passes through untouched, and with stdout
+ * redirected to a file or a pipe there is no code page to worry about at all.
+ *
+ * This file is deliberately 100% ASCII: it is compiled without /utf-8 on machines
+ * whose default code page is not UTF-8, and a stray non-ASCII byte in a comment then
+ * produces warnings at best and mojibake in the output at worst.
+ */
+std::string consoleText(const std::string& text) {
+    bool ascii = true;
+    for (unsigned char c : text) {
+        if (c > 127) {
+            ascii = false;
+            break;
+        }
+    }
+    if (ascii) return text;
+
+    // Only a console needs the conversion: a file or a pipe gets UTF-8, which is what
+    // anything reading the output afterwards expects.
+    const HANDLE stdoutHandle = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD consoleMode = 0;
+    if (!stdoutHandle || !GetConsoleMode(stdoutHandle, &consoleMode)) return text;
+
+    const UINT codePage = GetConsoleOutputCP();
+    if (codePage == 0 || codePage == CP_UTF8) return text;
+
+    const int wide = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+    if (wide <= 1) return text;
+    std::wstring utf16(static_cast<size_t>(wide - 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, utf16.data(), wide);
+
+    const int narrow = WideCharToMultiByte(codePage, 0, utf16.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (narrow <= 1) return text;
+    std::string converted(static_cast<size_t>(narrow - 1), '\0');
+    if (WideCharToMultiByte(codePage, 0, utf16.c_str(), -1, converted.data(), narrow, nullptr, nullptr) == 0)
+        return text;
+    return converted;
+}
+
+/**
+ * One finished piece of text: it reaches stdout in the console's code page and the
+ * report file in UTF-8, and it is flushed, so a line can never be left half written.
+ * The report file always gets the line; stdout only when the caller wants it there,
+ * which is what lets --json and --report be combined in one run.
+ */
+void emit(const std::string& text, bool toStdout) {
+    if (g_report) {
+        std::fputs(text.c_str(), g_report);
+        std::fflush(g_report);
+    }
+    if (toStdout) {
+        const std::string converted = consoleText(text);
+        std::fputs(converted.c_str(), stdout);
+        std::fflush(stdout);
+    }
+}
+
+/** Formatted output for everything that is not a stage line. */
+void out(const char* format, ...) {
+    char buffer[4096];
+    va_list args;
+    va_start(args, format);
+    const int written = std::vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    if (written <= 0) return;
+    if (written >= static_cast<int>(sizeof(buffer))) buffer[sizeof(buffer) - 1] = '\0';
+
+    emit(buffer, true);
+}
+
+/** The same for messages that belong on stderr (usage and start-up errors). */
+void err(const char* format, ...) {
+    char buffer[2048];
+    va_list args;
+    va_start(args, format);
+    const int written = std::vsnprintf(buffer, sizeof(buffer), format, args);
+    va_end(args);
+    if (written <= 0) return;
+    if (written >= static_cast<int>(sizeof(buffer))) buffer[sizeof(buffer) - 1] = '\0';
+
+    if (g_report) {
+        std::fputs(buffer, g_report);
+        std::fflush(g_report);
+    }
+    std::fputs(buffer, stderr);
+    std::fflush(stderr);
+}
+
+/**
+ * A command line argument as a Windows path.
+ *
+ * main() receives bytes, not text: the CRT decodes the command line with the machine's
+ * ANSI code page, so a path with Cyrillic letters arrives as CP1251/CP866 bytes, while
+ * everything this program prints is UTF-8. A path is therefore read as UTF-8 when the
+ * bytes really are UTF-8, and as the ANSI code page otherwise - both cases end up as
+ * the same wide string that _wfopen needs.
+ */
+std::wstring widenPath(const std::string& text) {
+    const bool utf8 = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.c_str(), -1, nullptr, 0) > 1;
+    const UINT codePage = utf8 ? CP_UTF8 : CP_ACP;
+    const DWORD flags = utf8 ? MB_ERR_INVALID_CHARS : 0u;
+
+    const int wide = MultiByteToWideChar(codePage, flags, text.c_str(), -1, nullptr, 0);
+    if (wide <= 1) return std::wstring();
+    std::wstring result(static_cast<size_t>(wide - 1), L'\0');
+    if (MultiByteToWideChar(codePage, flags, text.c_str(), -1, result.data(), wide) == 0) return std::wstring();
+    return result;
+}
+
+/** Closes the report file on every way out of main(). */
+struct ReportGuard {
+    ~ReportGuard() {
+        if (g_report) {
+            std::fflush(g_report);
+            std::fclose(g_report);
+            g_report = nullptr;
+        }
+    }
+};
+
+/** "[stage          ] text" with the stage padded to 16 characters. */
+std::string stageLine(const std::string& stage, const std::string& text) {
+    std::string padded = stage;
+    if (padded.size() < 16) padded.append(16 - padded.size(), ' ');
+    return "[" + padded + "] " + text + "\n";
+}
 
 void note(const std::string& stage, const std::string& text) {
-    if (!g_json) std::printf("[%-16s] %s\n", stage.c_str(), text.c_str());
+    // The report file gets the stage log even in --json mode, so one run can produce
+    // machine readable stdout and a human readable file at the same time.
+    emit(stageLine(stage, text), !g_json);
 }
 
 void failed(const std::string& stage, HRESULT hr, const std::string& what) {
     g_failures++;
-    if (g_json) return;
-    std::printf("[%-16s] FAILED - %s\n", stage.c_str(), what.c_str());
-    std::printf("[%-16s] %s\n", stage.c_str(), saf::describeHresult(static_cast<int32_t>(hr)).c_str());
+    emit(stageLine(stage, "FAILED - " + what), !g_json);
+    emit(stageLine(stage, saf::describeHresult(static_cast<int32_t>(hr))), !g_json);
 }
 
 std::string jsonEscape(const std::string& value) {
@@ -558,23 +696,48 @@ CaptureWindow collectCapture(IAudioCaptureClient* capture, HANDLE event, int sec
     return window;
 }
 
-/** One line about what arrived: silence and audio look completely different. */
+/** One sentence about what is inside the window, with the level it was judged by. */
+std::string contentText(const saf::dsp::SampleStats& stats) {
+    char text[160];
+    switch (saf::dsp::classifyContent(stats)) {
+        case saf::dsp::PacketContent::Silent:
+            return "pure silence: every sample is exactly zero";
+        case saf::dsp::PacketContent::NoiseFloor:
+            std::snprintf(text, sizeof(text), "no audio in it: the peak is below %.0f dBFS, so this is the noise floor",
+                saf::dsp::kNoiseFloorDbfs);
+            return text;
+        default:
+            std::snprintf(text, sizeof(text), "audio is in it: the peak is above %.0f dBFS", saf::dsp::kNoiseFloorDbfs);
+            return text;
+    }
+}
+
+/**
+ * What arrived. The stage lines say whether the stream runs; these two lines say
+ * what is in it, and they are deliberately short: a single 185 character line gets
+ * wrapped by a console window, and the report that came back from the first real
+ * machine lost the end of exactly such a line.
+ */
 void reportWindow(const CaptureWindow& window, const WAVEFORMATEX* negotiated) {
-    std::string text = std::to_string(window.packets) + " packet(s), " + std::to_string(window.frames) + " frames, "
+    std::string data = std::to_string(window.packets) + " packet(s), " + std::to_string(window.frames) + " frames, "
         + std::to_string(window.silentFrames) + " frames flagged silent";
     if (negotiated) {
-        text += ", " + std::to_string(negotiated->nSamplesPerSec) + " Hz / " + std::to_string(negotiated->nChannels)
+        data += ", " + std::to_string(negotiated->nSamplesPerSec) + " Hz / " + std::to_string(negotiated->nChannels)
             + " channels / " + std::to_string(negotiated->wBitsPerSample) + " bit";
     }
-    if (window.stats.samples > 0) {
-        char numbers[192];
-        std::snprintf(numbers, sizeof(numbers), ", peak %.6f, RMS %.6f, non-zero samples %llu", window.stats.peak,
-            window.stats.rms(), static_cast<unsigned long long>(window.stats.nonzero));
-        text += numbers;
-        text += window.stats.nonzero == 0 ? " - the stream carries pure silence (zeros, not flagged)"
-                                          : " - the stream carries audio";
+    note("data", data);
+
+    if (window.stats.samples == 0) {
+        note("levels", "nothing was measured: no packet arrived, or every packet was flagged silent");
+        return;
     }
-    note("data", text);
+
+    char numbers[192];
+    std::snprintf(numbers, sizeof(numbers), "peak %.6f (%+.1f dBFS), RMS %.6f, non-zero samples %llu",
+        window.stats.peak, saf::dsp::dbfs(window.stats.peak), window.stats.rms(),
+        static_cast<unsigned long long>(window.stats.nonzero));
+    note("levels", numbers);
+    note("levels", contentText(window.stats));
 }
 
 /** PKEY_Device_FriendlyName - {a45c254e-df1c-4efd-8020-67d146a850e0}, 14. */
@@ -634,14 +797,14 @@ bool looksLikeVirtualDevice(const std::string& name) {
 int printActiveSessions(IMMDevice* device, const std::vector<ProcessEntry>& processes) {
     ComPtr<IAudioSessionManager2> manager;
     if (FAILED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, manager.putVoid())) || !manager) {
-        std::printf("    (the session manager is unavailable)\n");
+        out("    (the session manager is unavailable)\n");
         return 0;
     }
 
     ComPtr<IAudioSessionEnumerator> sessions;
     int count = 0;
     if (FAILED(manager->GetSessionEnumerator(sessions.put())) || !sessions || FAILED(sessions->GetCount(&count))) {
-        std::printf("    (the session list is unavailable)\n");
+        out("    (the session list is unavailable)\n");
         return 0;
     }
 
@@ -664,7 +827,7 @@ int printActiveSessions(IMMDevice* device, const std::vector<ProcessEntry>& proc
                 break;
             }
         }
-        std::printf("    %6lu  %s\n", static_cast<unsigned long>(pid), name.c_str());
+        out("    %6lu  %s\n", static_cast<unsigned long>(pid), name.c_str());
         printed++;
     }
     return printed;
@@ -683,20 +846,20 @@ void listPlayingProcesses() {
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ComGuard comGuard(SUCCEEDED(com));
     if (FAILED(com) && com != RPC_E_CHANGED_MODE) {
-        std::printf("COM could not be initialised\n");
+        out("COM could not be initialised\n");
         return;
     }
 
     ComPtr<IMMDeviceEnumerator> enumerator;
     if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(enumerator.put())))) {
-        std::printf("the audio device enumerator is unavailable\n");
+        out("the audio device enumerator is unavailable\n");
         return;
     }
 
     const std::string defaultName = defaultRenderEndpointName();
-    std::printf("default output: %s\n", defaultName.empty() ? "(name unavailable)" : defaultName.c_str());
+    out("default output: %s\n", defaultName.empty() ? "(name unavailable)" : defaultName.c_str());
     if (looksLikeVirtualDevice(defaultName)) {
-        std::printf("note: the default output looks like a virtual device. That is not a problem for the plugin\n"
+        out("note: the default output looks like a virtual device. That is not a problem for the plugin\n"
                     "      (it captures applications, not devices, and changes no routing), but a --system test on\n"
                     "      such a line measures what is fed *into* the cable, not what you hear.\n");
     }
@@ -705,7 +868,7 @@ void listPlayingProcesses() {
     UINT deviceCount = 0;
     if (FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, devices.put())) || !devices
         || FAILED(devices->GetCount(&deviceCount))) {
-        std::printf("the output devices could not be enumerated\n");
+        out("the output devices could not be enumerated\n");
         return;
     }
 
@@ -717,16 +880,16 @@ void listPlayingProcesses() {
 
         const std::string name = deviceName(device.get());
         const bool isDefault = !name.empty() && name == defaultName;
-        std::printf("\n%s%s\n", name.empty() ? "(unnamed output)" : name.c_str(),
+        out("\n%s%s\n", name.empty() ? "(unnamed output)" : name.c_str(),
             isDefault ? "   <- default output" : "");
         const int printed = printActiveSessions(device.get(), processes);
-        if (printed == 0) std::printf("    (nothing is playing on this device)\n");
+        if (printed == 0) out("    (nothing is playing on this device)\n");
         total += printed;
     }
 
-    std::printf("\nprocesses playing audio right now: %d\n", total);
+    out("\nprocesses playing audio right now: %d\n", total);
     if (total == 0)
-        std::printf("  (none - start playback in the application you want to test with)\n");
+        out("  (none - start playback in the application you want to test with)\n");
 }
 
 // ------------------------------------------------------------------ the probe
@@ -746,6 +909,8 @@ struct Options {
     bool lookForTone = false;
     /** The pid of the tone process, once --spawn-tone started it. */
     DWORD childPid = 0;
+    /** Write the text log of this run to this file (--report). Never any audio. */
+    std::string reportPath;
     bool list = false;
     bool playing = false;
     bool system = false;
@@ -763,6 +928,7 @@ struct RunResult {
     uint64_t toneFrames = 0;
     int packets = 0;
     int channels = 0;
+    saf::dsp::PacketContent content = saf::dsp::PacketContent::Silent;
     std::string format;
     std::string failureStage;
     std::string failureText;
@@ -846,7 +1012,7 @@ int runProbe(const Options& options, RunResult& result) {
         // do and stop, without an HRESULT explanation that would suggest the audio
         // engine refused something.
         // To stderr on purpose: a --json run keeps a clean, parseable stdout.
-        std::fprintf(stderr, "\nno target process was given. Use one of:\n"
+        err("\nno target process was given. Use one of:\n"
                              "  --pid <n> | --process <name.exe>   capture that application\n"
                              "  --spawn-tone                       capture a second copy of this program that plays 1 kHz\n"
                              "  --system                           capture the whole system audio (control test)\n"
@@ -1038,6 +1204,7 @@ int runProbe(const Options& options, RunResult& result) {
     result.peak = window.stats.peak;
     result.rms = window.stats.rms();
     result.pcmArrived = window.packets > 0 && window.stats.nonzero > 0;
+    result.content = saf::dsp::classifyContent(window.stats);
     reportWindow(window, negotiated);
 
     if (options.lookForTone && !window.samples.empty()) {
@@ -1097,7 +1264,7 @@ int runProbe(const Options& options, RunResult& result) {
             if (tone.framesRendered() < halfASecond) {
                 note("tone", "this program rendered nothing (or almost nothing) - the tone never reached the device, "
                              "so the capture had nothing to take and the tone proves nothing here");
-            } else if (window.stats.nonzero == 0) {
+            } else if (saf::dsp::classifyContent(window.stats) == saf::dsp::PacketContent::Silent) {
                 note("tone", "the tone is not in this capture and no other audio arrived either, so this run neither "
                              "proves nor disproves content: run --spawn-tone for the decisive version, or --pid "
                              "<player> while that player is really playing something");
@@ -1239,6 +1406,7 @@ int runSystemLoopback(const Options& options, RunResult& result) {
     result.peak = window.stats.peak;
     result.rms = window.stats.rms();
     result.pcmArrived = window.packets > 0 && window.stats.nonzero > 0;
+    result.content = saf::dsp::classifyContent(window.stats);
     result.channels = static_cast<int>(mix->nChannels);
     result.format = std::to_string(mix->nSamplesPerSec) + " Hz / " + std::to_string(mix->nChannels) + " channels / "
         + std::to_string(mix->wBitsPerSample) + " bit (device mix format)";
@@ -1308,12 +1476,12 @@ int runToneOnly(const Options& options) {
 
     tone.stop();
     note("tone", "rendered " + std::to_string(tone.framesRendered()) + " frames (" + tone.renderStatus() + ")");
-    note("teardown", "the tone was stopped, no capture was opened and nothing was written to disk");
+    note("teardown", "the tone was stopped, no capture was opened, no audio written anywhere");
     return tone.framesRendered() > 0 ? 0 : 1;
 }
 
-void printUsage() {
-    std::printf(
+const char* usageText() {
+    return
         "StreamAudioFilter process loopback probe\n\n"
         "  --list                 list running processes (pid, name)\n"
         "  --playing              show every output device and the processes playing on it right now\n"
@@ -1326,19 +1494,32 @@ void printUsage() {
         "  --system               capture whole system audio instead (control test)\n"
         "  --exclude              capture everything *except* the target tree\n"
         "  --seconds <n>          how long to capture (default 5)\n"
-        "  --json                 machine readable result\n\n"
-        "Nothing is installed, no setting is changed and no audio is written to disk.\n"
+        "  --json                 machine readable result (one line, for scripts), describing a capture run\n"
+        "                         (--list and --playing always print text)\n"
+        "  --report <file>        also write the stage log of this run to this text file (UTF-8)\n\n"
+        "Nothing is installed, no setting is changed, and no audio is written anywhere - the only file\n"
+        "this program can create is the text log you ask for with --report.\n"
         "\nThe three things this program can prove, in order of strength:\n"
         "  1. --spawn-tone        a second process plays 1 kHz and this process captures it: the tone must\n"
         "                         be in the capture. Nothing else can prove that a capture follows content.\n"
         "                         --spawn-tone --system checks the same thing on the whole system audio.\n"
-        "  2. --process <player>  capture an application that is really playing something. The numbers\n"
-        "                         (non-zero samples, peak, RMS) say whether audio arrived: a stream can be\n"
-        "                         perfectly paced and still carry nothing but zeros.\n"
+        "  2. --process <player>  capture an application that is really playing something. The [levels] lines\n"
+        "                         say what is in the window: a stream can be perfectly paced and still carry\n"
+        "                         nothing but zeros, and a count of non-zero samples alone cannot tell a noise\n"
+        "                         floor from audio - which is why the peak is reported in dBFS as well.\n"
         "  3. --self-tone         the weakest: this program plays the tone *and* captures it, so a missing\n"
         "                         tone cannot be told apart from a tone that never reached the mix of the\n"
         "                         captured device. A tone that *is* found here does prove that the capture\n"
-        "                         followed the device mix; a missing one is inconclusive, never a failure.\n");
+        "                         followed the device mix; a missing one is inconclusive, never a failure.\n";
+}
+
+/**
+ * Print the usage text to stdout (--help) or to stderr (a mistake, so that a
+ * --json run keeps a stdout that carries nothing but the machine readable line).
+ */
+void printUsage(bool toStderr = false) {
+    if (toStderr) err("%s", usageText());
+    else out("%s", usageText());
 }
 
 } // namespace
@@ -1363,7 +1544,7 @@ int main(int argc, char** argv) {
         } else if (arg == "--seconds" && hasNext) {
             options.seconds = std::atoi(argv[++i]);
             if (options.seconds < 1 || options.seconds > 300) {
-                std::fprintf(stderr, "--seconds must be between 1 and 300\n");
+                err("--seconds must be between 1 and 300\n");
                 return 2;
             }
         } else if (arg == "--self-tone") {
@@ -1374,14 +1555,21 @@ int main(int argc, char** argv) {
             options.toneOnly = true;
         } else if (arg == "--exclude") {
             options.exclude = true;
+        } else if (arg == "--report" && hasNext) {
+            options.reportPath = argv[++i];
         } else if (arg == "--json") {
             g_json = true;
         } else if (arg == "--help" || arg == "-h") {
             printUsage();
             return 0;
+        } else if (arg == "--pid" || arg == "--process" || arg == "--seconds" || arg == "--report") {
+            err("%s needs a value: %s\n", arg.c_str(), arg == "--pid" ? "--pid <n>"
+                : (arg == "--process" ? "--process <name.exe>" : (arg == "--seconds" ? "--seconds <1..300>"
+                                                                    : "--report <file>")));
+            return 2;
         } else {
-            std::fprintf(stderr, "unknown argument: %s\n\n", arg.c_str());
-            printUsage();
+            err("unknown argument: %s\n\n", arg.c_str());
+            printUsage(true);
             return 2;
         }
     }
@@ -1390,20 +1578,42 @@ int main(int argc, char** argv) {
 
     if (options.toneOnly && (options.selfTone || options.spawnTone || options.system || options.pid != 0
             || !options.process.empty())) {
-        std::fprintf(stderr, "--tone-only only plays the tone; it captures nothing, so it cannot be combined with a "
-                           "capture option\n");
+        err("--tone-only only plays the tone; it captures nothing, so it cannot be combined with a "
+            "capture option\n");
         return 2;
     }
 
     if (options.spawnTone && options.selfTone) {
-        std::fprintf(stderr, "--spawn-tone and --self-tone are two ways to play the tone; use one of them\n");
+        err("--spawn-tone and --self-tone are two ways to play the tone; use one of them\n");
         return 2;
     }
 
     if (options.spawnTone && (options.pid != 0 || !options.process.empty())) {
-        std::fprintf(stderr, "--spawn-tone captures the tone process that it starts itself; do not combine it with "
-                           "--pid or --process\n");
+        err("--spawn-tone captures the tone process that it starts itself; do not combine it with "
+            "--pid or --process\n");
         return 2;
+    }
+
+    ReportGuard reportGuard;
+    if (!options.reportPath.empty()) {
+        // The path may contain anything a Windows path may contain, so it is opened through
+        // its wide form; the file itself is UTF-8 text. No audio is written, ever.
+        const std::wstring wideName = widenPath(options.reportPath);
+        if (!wideName.empty()) g_report = _wfopen(wideName.c_str(), L"wb");
+        if (!g_report) g_report = std::fopen(options.reportPath.c_str(), "wb");
+        if (!g_report) {
+            err("the report file could not be opened for writing: %s\n", options.reportPath.c_str());
+            return 2;
+        }
+        // In --json mode this notice must not land on stdout: that stream carries the
+        // one machine readable line, and nothing else. It goes to stderr instead.
+        if (g_json) {
+            err("[report] this run is written to %s as UTF-8 text - no audio is written anywhere\n",
+                options.reportPath.c_str());
+        } else {
+            out("[report] this run is written to %s as UTF-8 text - no audio is written anywhere\n\n",
+                options.reportPath.c_str());
+        }
     }
 
     if (options.toneOnly) return runToneOnly(options);
@@ -1416,20 +1626,20 @@ int main(int argc, char** argv) {
     if (options.list) {
         for (const ProcessEntry& entry : processList()) {
             if (entry.pid == 0) continue;
-            std::printf("%6lu  %-40s %s\n", static_cast<unsigned long>(entry.pid), entry.exeName.c_str(), entry.exePath.c_str());
+            out("%6lu  %-40s %s\n", static_cast<unsigned long>(entry.pid), entry.exeName.c_str(), entry.exePath.c_str());
         }
         return 0;
     }
 
     if (!g_json) {
-        std::printf("StreamAudioFilter - standalone WASAPI process loopback probe\n");
-        std::printf("no installation, no settings changed, no audio written to disk\n\n");
+        out("StreamAudioFilter - standalone WASAPI process loopback probe\n");
+        out("no installation, no settings changed, no audio written out anywhere\n\n");
     }
 
     if (options.spawnTone) {
         std::string spawnError;
         if (!startToneProcess(options.seconds, spawnError)) {
-            std::fprintf(stderr, "the tone process could not be started: %s\n", spawnError.c_str());
+            err("the tone process could not be started: %s\n", spawnError.c_str());
             return 1;
         }
         options.childPid = g_toneProcess.pid;
@@ -1445,64 +1655,81 @@ int main(int argc, char** argv) {
     waitForToneProcess(2000);
 
     if (g_json) {
-        std::printf("{\"ok\": %s, \"pcmArrived\": %s, \"toneMagnitude\": %.4f, \"packets\": %d, \"frames\": %llu, "
-                    "\"silentFrames\": %llu, \"nonZeroSamples\": %llu, \"peak\": %.6f, \"rms\": %.6f, "
-                    "\"format\": \"%s\", \"channels\": %d, \"toneFrames\": %llu, \"toneProcessExit\": %d, "
-                    "\"failureStage\": \"%s\", "
-                    "\"failure\": \"%s\", \"failures\": %d}\n",
-            status == 0 ? "true" : "false", result.pcmArrived ? "true" : "false", result.tone, result.packets,
-            static_cast<unsigned long long>(result.frames), static_cast<unsigned long long>(result.silentFrames),
-            static_cast<unsigned long long>(result.nonZeroSamples), result.peak, result.rms,
-            jsonEscape(result.format).c_str(), result.channels, static_cast<unsigned long long>(result.toneFrames),
-            options.spawnTone ? g_toneProcess.exitCode : -1,
-            jsonEscape(result.failureStage).c_str(),
-            jsonEscape(result.failureText).c_str(), g_failures);
+        // The machine readable line carries the same facts as the stage log, including
+        // what a window contains and the level it was judged by.
+        const char* contentName = result.content == saf::dsp::PacketContent::Audio ? "audio"
+            : (result.content == saf::dsp::PacketContent::NoiseFloor ? "noiseFloor" : "silent");
+        out("{\"ok\": %s, \"pcmArrived\": %s, \"content\": \"%s\", \"toneMagnitude\": %.4f, \"packets\": %d, "
+            "\"frames\": %llu, \"silentFrames\": %llu, \"nonZeroSamples\": %llu, \"peak\": %.6f, "
+            "\"peakDbfs\": %.1f, \"rms\": %.6f, \"format\": \"%s\", \"channels\": %d, \"toneFrames\": %llu, "
+            "\"toneProcessExit\": %d, \"failureStage\": \"%s\", \"failure\": \"%s\", \"failures\": %d}\n",
+            status == 0 ? "true" : "false", result.pcmArrived ? "true" : "false", contentName, result.tone,
+            result.packets, static_cast<unsigned long long>(result.frames),
+            static_cast<unsigned long long>(result.silentFrames),
+            static_cast<unsigned long long>(result.nonZeroSamples), result.peak, saf::dsp::dbfs(result.peak),
+            result.rms, jsonEscape(result.format).c_str(), result.channels,
+            static_cast<unsigned long long>(result.toneFrames), options.spawnTone ? g_toneProcess.exitCode : -1,
+            jsonEscape(result.failureStage).c_str(), jsonEscape(result.failureText).c_str(), g_failures);
     } else {
         const bool toneWanted = options.lookForTone && !options.exclude;
         const bool toneMissing = toneWanted && result.tone <= 0.05;
         const bool toneProcessFailed = options.spawnTone && g_toneProcess.exitCode != 0;
+        const bool audioInWindow = result.content == saf::dsp::PacketContent::Audio;
+        // What a window without audible audio actually was, in one clause.
+        const std::string noAudio = result.content == saf::dsp::PacketContent::NoiseFloor
+            ? "only a noise floor arrived (peak below -60 dBFS): the stream works, but nothing audible came from it"
+            : "every sample was exactly zero";
 
         if (options.system) {
             if (status != 0) {
-                std::printf("\nverdict: the control test failed - the stage above names the cause\n");
+                out("\nverdict: the control test failed - the stage above names the cause\n");
             } else if (toneMissing) {
                 // Only a tone this program played itself can get here: --spawn-tone fails the run when the
                 // tone of its child is missing, so a successful status with a missing tone means self-tone.
-                std::printf("\nverdict: the loopback captured audio (see the data line), but the 1 kHz tone this\n"
-                            "         program played itself was not part of it. One process was both the source and\n"
-                            "         the observer, so this run says nothing about the capture: use\n"
-                            "         --spawn-tone --system, where a second process plays the tone and the tone\n"
-                            "         therefore has to appear.\n");
+                out("\nverdict: the loopback captured audio, but the 1 kHz tone this program played itself was not\n"
+                    "         part of it. One process was both the source and the observer, so this run says nothing\n"
+                    "         about the capture - use --spawn-tone --system, where a second process plays the tone\n"
+                    "         and the tone therefore has to appear.\n");
+                if (toneProcessFailed) {
+                    out("         (the tone process did not finish cleanly, so it may have played nothing)\n");
+                }
             } else if (toneWanted) {
-                std::printf("\nverdict: the control test passed - the 1 kHz tone is in the system audio of this\n"
-                            "         device, so the device and the audio engine deliver what applications play\n");
+                out("\nverdict: the control test passed - the 1 kHz tone is in the system audio of this device (peak\n"
+                    "         %+.1f dBFS), so the device and the audio engine deliver what applications play\n",
+                    saf::dsp::dbfs(result.peak));
+            } else if (audioInWindow) {
+                out("\nverdict: the whole system audio loopback works on this system: %llu non-zero samples, peak "
+                    "%+.1f dBFS\n", static_cast<unsigned long long>(result.nonZeroSamples),
+                    saf::dsp::dbfs(result.peak));
             } else {
-                std::printf("\nverdict: the whole system audio loopback works on this system: %llu non-zero samples "
-                            "(peak %.6f)\n", static_cast<unsigned long long>(result.nonZeroSamples), result.peak);
+                out("\nverdict: the loopback stream works (packets arrive at the right rate) but no audible audio was\n"
+                    "         in the window: %s\n", noAudio.c_str());
             }
         } else if (status == 2) {
-            // Usage error: the reason was printed above.
+            // Usage error: the reason was printed above, on stderr.
         } else if (status != 0) {
-            std::printf("\nverdict: the capture did not work - the stage above names the cause\n");
-        } else if (result.nonZeroSamples > 0) {
-            std::printf("\nverdict: the process loopback capture works on this system: %llu non-zero samples "
-                        "(peak %.6f)\n", static_cast<unsigned long long>(result.nonZeroSamples), result.peak);
-            if (toneWanted && !toneMissing) {
-                std::printf("         (the 1 kHz tone is in it: the capture followed the content of the target)\n");
-            } else if (toneMissing && options.spawnTone && toneProcessFailed) {
-                std::printf("         (the tone process did not finish cleanly, so it may have played nothing: this\n"
-                            "          run is inconclusive - see the tone lines above)\n");
-            } else if (toneMissing && options.selfTone) {
-                std::printf("         (the 1 kHz tone of this program was not part of it - see the tone lines: with\n"
-                            "          one process as both source and observer this says nothing about the capture;\n"
-                            "          run --spawn-tone for the decisive version)\n");
-            }
+            out("\nverdict: the capture did not work - the stage above names the cause\n");
         } else if (options.exclude && options.lookForTone) {
-            std::printf("\nverdict: the exclusion works as intended - everything except the tone process was "
-                        "captured,\n         so the tone is absent and the capture is silent\n");
+            out("\nverdict: the exclusion works as intended - everything except the tone process was captured, so the\n"
+                "         tone is absent and the window is silent\n");
+        } else if (audioInWindow) {
+            out("\nverdict: the process loopback capture works on this system and audio is in it: %llu non-zero\n"
+                "         samples, peak %+.1f dBFS\n", static_cast<unsigned long long>(result.nonZeroSamples),
+                saf::dsp::dbfs(result.peak));
+            if (toneWanted && !toneMissing) {
+                out("         (the 1 kHz tone is in it: the capture followed the content of the tone process)\n");
+            } else if (toneMissing && options.selfTone) {
+                out("         (the 1 kHz tone of this program was not part of it - see the tone lines: with one\n"
+                    "          process as both source and observer this says nothing about the capture; run\n"
+                    "          --spawn-tone for the decisive version)\n");
+            } else if (toneMissing && toneProcessFailed) {
+                out("         (the tone process did not finish cleanly, so it may have played nothing: this run is\n"
+                    "          inconclusive about the tone)\n");
+            }
         } else {
-            std::printf("\nverdict: the capture stream itself works on this system, but the target produced no "
-                        "audio during the test - start playback in it and run the probe again\n");
+            out("\nverdict: the capture stream itself works on this system, but no audible audio was in the window:\n"
+                "         %s. Start playback in the target (or use --spawn-tone) and run the probe again.\n",
+                noAudio.c_str());
         }
     }
 

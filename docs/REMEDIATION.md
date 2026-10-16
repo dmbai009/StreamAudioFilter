@@ -12,16 +12,17 @@ is quoted), **in progress**, **open**, **blocked on the user's machine** (needs 
 |---|---|---|---|
 | 1 | WASAPI activation failure (`0x8000000E`) | done, and reproduced/fixed on the real machine | root cause: the completion handler was not agile; fixed in `native/src/win/com_ptr.h`. The user's run on 19045.7725 with the fixed build reports `[handler] ... IAgileObject: yes`, `[activation-call] accepted`, `[activate-result] S_OK` — the failure is gone |
 | 2 | Separated diagnostics per stage | done | twelve stages in the probe, four activation stages in the capture, every HRESULT named and explained (`native/src/hr_advice.cc`); `systemMessage()` no longer prefixes its own separator (`E_FAIL - - text`) |
-| 2.1 | What "audio arrived" means | done | the `AUDCLNT_BUFFERFLAGS_SILENT` flag is never set for a process loopback stream, so both the probe and the capability walk used to report samples for a stream of zeros. Both now count non-zero samples and the peak through one portable, tested implementation: `native/src/dsp/packet_measure.h`, 33 new checks in `native/test/dsp_tests.cc` (95 total). `GetBufferSize()` is reported only when the value is plausible (the probe saw `1478376832` frames) |
-| 2.2 | The tone search itself (found by re-reading the first real run) | done | the first run's "1 kHz magnitude 0.000025 / 0.000007" was a measurement bug, not a property of the capture: the search treated the interleaved stereo capture as mono, and sample repetition moves a 1 kHz tone to 500 Hz. `saf::dsp::toneMagnitude(samples, count, sampleRate, frequency, channels)` now downmixes first. Portable proof: the same stereo buffer reads `0.1999` at 500 Hz (mono reading) and `0.0000` at 1 kHz, and `0.1999` at 1 kHz with `channels=2`. The probe passes the negotiated channel count and reports it in `--json` |
-| 3 | Standalone process loopback probe | done, and run on the real machine | `native/tools/process_loopback_probe/main.cc`, `docs/PROBE.md`; released as `process-loopback-probe.exe`; `--playing` now lists every output device with the processes playing on it (and warns when the default output is a virtual cable), `--system` is the control over the whole system audio, `--spawn-tone` is the decisive content check (a second copy of the probe plays the tone and is the capture target), `--tone-only` is its child mode, a missing target is a usage error (`exit 2`) instead of an HRESULT report |
+| 2.1 | What "audio arrived" means | done, corrected once more by the real machine | the `AUDCLNT_BUFFERFLAGS_SILENT` flag is never set for a process loopback stream, so both the probe and the capability walk used to report samples for a stream of zeros. Both now measure through one portable, tested implementation (`native/src/dsp/packet_measure.h`, `dsp_tests.cc` 108 checks), and the level decides what a window contains: silence, a noise floor (below -60 dBFS) or audio. The second real run showed why a count alone is not enough: `audiorepeater.exe` delivered 580972 samples that are not exactly zero at a peak of -90.2 dBFS. `GetBufferSize()` is reported only when the value is plausible (the probe has seen `1478376832` and `2419735936` frames) |
+| 2.2 | The probe's own output was fragile | done | the `[data]` line was 185 characters and the tail of it was lost to line wrapping in the first report that came back; it is now `[data]` plus two short `[levels]` lines, every line is flushed, non-ASCII device names are converted to the console's page (the Steam devices printed as block noise), and `--report <file>` writes the same stage log to a UTF-8 text file |
+| 2.3 | The tone search itself (found by re-reading the first real run) | done, then confirmed on the machine | the first run's "1 kHz magnitude 0.000025 / 0.000007" was a measurement bug, not a property of the capture: the search treated the interleaved stereo capture as mono, and sample repetition moves a 1 kHz tone to 500 Hz. `saf::dsp::toneMagnitude(samples, count, sampleRate, frequency, channels)` now downmixes first. Portable proof: the same stereo buffer reads `0.1999` at 500 Hz (mono reading) and `0.0000` at 1 kHz, and `0.1999` at 1 kHz with `channels=2`. The probe passes the negotiated channel count and reports it in `--json` |
+| 3 | Standalone process loopback probe | done, and the decisive run passed on the real machine | `native/tools/process_loopback_probe/main.cc`, `docs/PROBE.md`; released as `process-loopback-probe.exe`; `--playing` lists every output device with the processes playing on it (and warns when the default output is a virtual cable), `--system` is the control over the whole system audio, `--spawn-tone` is the decisive content check (a second copy of the probe plays the tone and is the capture target: the machine returned `peak 0.200000, 1 kHz magnitude 0.198461`, and `0.199965` on the system loopback), `--tone-only` is its child mode, `--report` saves the log, a missing target is a usage error (`exit 2`) |
 | 4 | Discord interception (the share audio never reaches the plugin) | open | two warnings were observed; the pipeline has not been investigated yet — next stage |
 | 5 | Honest safety: fail closed, explicit unfiltered opt-in, distinct states | partially done (contract exists) | `stream/intercept.ts` `decideAudio(...)`, tests 13/13; the UI states and the opt-in default are part of stage 7 |
 | 6 | Engine / multi-app re-verification | done for the engine | 97 portable checks, including a two-instance restart with measured peaks (`restart took 111 ms, peak levels 0.256 / 0.256`) |
 | 7 | UI / UX (theme tokens, one panel, message classes, localisation) | open | the screenshot shows two overlapping panels, one almost transparent |
 | 8 | Stability (single source of truth for the share state, no duplicate listeners) | open | — |
 | 9 | Install / update (ZIP + minimal steps, version compatibility gate) | partially done | ZIP route and the pinned bundle exist; the TS/native version gate is open |
-| 10 | Tests / CI (no skipped critical steps, releases gated) | mostly done, extending | CI builds the addon with MSVC, runs the portable tests under `g++` *and* `cl.exe`, runs the TypeScript tests, and refuses to publish when any of them fails |
+| 10 | Tests / CI (no skipped critical steps, releases gated) | mostly done, extending | CI builds the addon with MSVC, runs the portable tests under `g++` *and* `cl.exe`, runs the TypeScript tests, and refuses to publish when any of them fails. The probe step now also checks the reporting core on Windows instead of only compiling it: `--list` starts it, a missing target must exit `2` on stderr, `--report` must produce the text log, and with `--json` stdout must carry the JSON line and nothing else (the `[report] ...` notice used to be printed there as well) |
 | 11 | Security / complexity audit | open | scheduled after the functional stages, as requested |
 
 ## Stage 1 — the `0x8000000E` failure
@@ -51,8 +52,8 @@ is quoted), **in progress**, **open**, **blocked on the user's machine** (needs 
 | Hypothesis | Status |
 |---|---|
 | The machine (19045.7725) supports process loopback, and the agility bug was the only reason the capture failed | **Confirmed for the stream, in part by content.** The user's run reached `[capture-start]`, `[data] 799 packet(s), 383520 frames` for the probe's own tree and the same for `chrome.exe`, i.e. activation, format negotiation, `Start` and packet delivery all work on 19045; the `chrome.exe` capture reported `peak 0.317145, RMS 0.079421, 764032 non-zero samples`, so real audio was in the packets |
-| The packets contain the audio of the captured process | **Answered for one application, better test pending.** `--process chrome.exe` reported `764032 non-zero samples` with `peak 0.317145` while Chrome was playing, so a process loopback stream does follow a real application's audio on 19045. The remaining question — whether a *specific* tone of a *specific* other process comes through — is what `--spawn-tone` answers decisively, and the tone-search bug of row 2.2 had made every earlier tone reading useless |
-| The tone the probe played was missing from both captures | **Falsified as a fact about the capture.** It was the measurement bug of row 2.2 (interleaved stereo searched as mono). The probe now downmixes, reports the channel count, and keeps the honest reading: a tone the probe plays *itself* is advisory, a tone from a second process (`--spawn-tone`) is decisive |
+| The packets contain the audio of the captured process | **Answered, decisively, by the later run.** `--process chrome.exe` reported `764032 non-zero samples` with `peak 0.317145` while Chrome was playing, and `--spawn-tone` then answered the attribution question: a second copy of the probe played 1 kHz for the whole window and the capture of *that* process returned `peak 0.200000` (exactly the tone's amplitude) with a Goertzel magnitude of `0.198461`. The system loopback control returned `0.199965`. A count of non-zero samples alone was never proof, which is why the level reporting of row 2.1 exists |
+| The tone the probe played was missing from both captures | **Falsified as a fact about the capture, and then re-measured on the machine.** It was the measurement bug of row 2.2a (interleaved stereo searched as mono). With the search fixed, `--spawn-tone` found its tone in the process capture (`0.198461`) and in the system loopback (`0.199965`). A tone the probe plays *itself* stays advisory; a tone from a second process is decisive |
 | The unfiltered audio the viewer heard came from Discord's own capture, because Discord desktop does not request the share audio through the patched `mediaDevices` API | the interception investigation (stage 4) — a real experiment with a second Discord client, and a hook that either exists or does not |
 | The see-through panel is a CSS stacking/opacity problem plus duplicated mounts rather than a Discord theme incompatibility | stage 7, verified against the theme tokens and by counting panel mounts |
 | "Excluded from the share" was shown while the toggle was on because the row text describes the mode, not the toggle state | stage 7 — the row text will describe the toggle, and the mode only sets the default for applications without a rule |
@@ -60,18 +61,27 @@ is quoted), **in progress**, **open**, **blocked on the user's machine** (needs 
 ### What only the user's machine can confirm
 
 ```text
-1. process-loopback-probe.exe --playing                            (who is playing, and on which device)
-2. process-loopback-probe.exe --spawn-tone --seconds 8             (decisive content check)
-3. process-loopback-probe.exe --spawn-tone --system --seconds 8    (the same on the device path)
-4. process-loopback-probe.exe --process <that process>.exe --seconds 8   (the real application)
-5. the same, then the plugin, with OBS's "Application Audio Capture" as a control
+1. process-loopback-probe.exe --playing                            (who is playing, and on which device)   done
+2. process-loopback-probe.exe --spawn-tone --seconds 8             (decisive content check)                done
+3. process-loopback-probe.exe --spawn-tone --system --seconds 8    (the same on the device path)           done
+4. process-loopback-probe.exe --process <that process>.exe --seconds 8   (a real application)              done
+5. the plugin's own "Check support", with OBS's "Application Audio Capture" as a control               still open
 ```
 
-The first version of this list was run and its output is quoted in [PROBE.md](PROBE.md) and in section 1
-above. What is still needed from the machine: run 3 with `--playing` output, because only that shows
-whether a real application's audio is inside the packets (the `non-zero samples` and `peak` numbers), and
-run 2, because the control test is the one that can prove the device path. Send back the stage log (or
-`--json`).
+Runs 1–4 were executed on the machine and their output is quoted in [PROBE.md](PROBE.md) and in section 1
+above:
+
+* `--spawn-tone` returned `peak 0.200000` and a 1 kHz magnitude of `0.198461` — the capture of another
+  process carried the tone that process played, which is the content proof the whole stage needed;
+* `--spawn-tone --system` returned `0.199965`, so the device path is fine as well;
+* `--process audiorepeater.exe` returned `580972 non-zero samples` at a peak of `0.000031` (−90.2 dBFS) —
+  the run that turned into the level classification of row 2.1;
+* `--playing` listed six output devices and one active session, with `Line 1 (Virtual Audio Cable)` as the
+  default output and `audiorepeater.exe` feeding the Realtek speakers.
+
+What is still open here is the plugin itself on that machine: its own "Check support" result next to the
+same probe run, and the OBS control — then stage 4 (Discord interception) can be judged against a
+capture path that is proven to work.
 
 ### What is *not* claimed
 
@@ -80,6 +90,10 @@ run 2, because the control test is the one that can prove the device path. Send 
 * The fix was not "verified working on Windows" by CI: CI proves that the sources compile with MSVC and
   that the portable tests pass. A green CI is not a green capture — that is exactly what the probe and
   the user's run are for.
+* The standalone probe's reporting paths are additionally compiled offline for
+  `x86_64-windows-gnu` (clang front end + the mingw-w64 headers) with `-Wall -Wextra` and linked into a
+  Windows x64 executable: that catches API and signature problems without a Windows machine, but the
+  mingw-w64 headers are not the Windows SDK, so MSVC in CI remains the compiler of record.
 
 ## Standing rules this work keeps to
 
@@ -91,3 +105,5 @@ run 2, because the control test is the one that can prove the device path. Send 
   change, no administrator rights, no telemetry, and no audio written to disk without consent.
 * Nothing is reported as working because it compiles or because a component renders, and a measurement
   that cannot distinguish "packets arrived" from "audio arrived" is not evidence.
+* A number that a user is expected to act on is reported with the level it was judged by (`dBFS`), and a
+  threshold is a stated convention rather than a hidden constant.

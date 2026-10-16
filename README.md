@@ -180,13 +180,15 @@ Honestly about what has been verified and what has not.
   application list, live rules, switching an application off on the fly, mode B, applications appearing
   and closing, reading PCM (not silence, not overload), statistics, the capture gate, stopping and
   trimming invalid arguments, and two instances of one application as a single row;
-* the portable DSP core and the mixing engine: `./scripts/run-native-tests.sh` — **192 checks, 0
-  failures** (`dsp_tests` 95, `engine_tests` 97): the u8/s16/s24/s32/f32 formats, downmixing, the
+* the portable DSP core and the mixing engine: `./scripts/run-native-tests.sh` — **205 checks, 0
+  failures** (`dsp_tests` 108, `engine_tests` 97): the u8/s16/s24/s32/f32 formats, downmixing, the
   resampler (SNR > 70 dB at 44.1↔48 kHz), the limiter without clipping when summing, modes A and B,
   changing rules live, applications closing, the limit of simultaneous captures, the "capture gate"
   (nothing is captured while no share runs) and capturing several instances of one application without
   duplicating its audio (checked with a tone detector at the frequencies of both instances); the
-  **packet measurement** that decides whether a stream carries audio or only correctly paced zeros, the
+  **packet measurement** that decides what a window contains — silence, a noise floor or audio — from the
+  level in dBFS and not from a count of non-zero samples (the noise floor of the capture path is made of
+  samples that are not exactly zero; a real run measured 580972 of them at -90.2 dBFS), the
   **tone search** that downmixes interleaved channels before it looks for 1 kHz (searching interleaved
   stereo as if it were mono moves the tone to half its frequency, which is how the first real probe run
   reported a tone that *was* in the audio as missing), and

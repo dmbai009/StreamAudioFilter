@@ -373,6 +373,13 @@ constexpr DWORD kProbeActivationTimeoutMs = 5000;  // wait for ActivateCompleted
 constexpr DWORD kProbePacketTimeoutMs = 150;       // wait for a capture packet
 constexpr int kProbeListenMs = 150;                // how long packets are read
 
+/** A number with a fixed number of decimals, for the log lines. */
+std::string decimal(double value, int digits) {
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.*f", digits, value);
+    return text;
+}
+
 /** Signals the completion event when the activation finished. */
 class ProbeActivationHandler : public ComCallback<IActivateAudioInterfaceCompletionHandler, &IID_IActivateAudioInterfaceCompletionHandler> {
 public:
@@ -758,20 +765,30 @@ ProbeRun walkProcessLoopback() {
         }
     }
 
-    // "A packet arrived" is not "audio arrived": the number of non-zero samples is
-    // what separates a working capture from a stream of zeros.
+    // "A packet arrived" is not "audio arrived", and "samples are not zero" is not
+    // "audio arrived" either: the noise floor of the capture path is made of samples
+    // that are not exactly zero. The level decides, and the same classifier the
+    // standalone probe uses decides it (saf::dsp::classifyContent).
     run.pcmArrived = packets > 0 && stats.carriesAudio();
+    const bool audible = saf::dsp::classifyContent(stats) == saf::dsp::PacketContent::Audio;
     if (packets == 0) {
         log.note("data", "no packet arrived within " + std::to_string(kProbeListenMs) + " ms — the stream exists, the "
                          "engine delivered nothing (silence of the captured process, or a paused source)");
-    } else {
+    } else if (audible) {
         log.note("data", std::to_string(packets) + " packet(s), " + std::to_string(frames) + " frames in "
             + std::to_string(kProbeListenMs) + " ms, " + std::to_string(silentFrames) + " of them flagged silent, "
-            + std::to_string(stats.nonzero) + " non-zero samples, peak " + std::to_string(stats.peak)
-            + ", RMS " + std::to_string(stats.rms())
-            + (run.pcmArrived ? " — samples really arrive"
-                              : " — the stream carries silence (all samples are zero), which says nothing about "
-                                "support: the probed process was simply not playing anything"));
+            + std::to_string(stats.nonzero) + " non-zero samples, peak " + decimal(saf::dsp::dbfs(stats.peak), 1) + " dBFS — audio "
+            "is in the window");
+    } else if (run.pcmArrived) {
+        log.note("data", std::to_string(packets) + " packet(s), " + std::to_string(frames) + " frames in "
+            + std::to_string(kProbeListenMs) + " ms, " + std::to_string(stats.nonzero) + " non-zero samples, but the "
+            "peak is only " + decimal(saf::dsp::dbfs(stats.peak), 1) + " dBFS: what arrived is the noise floor of the capture "
+            "path, not audio — the stream works, nothing audible was playing");
+    } else {
+        log.note("data", std::to_string(packets) + " packet(s), " + std::to_string(frames) + " frames in "
+            + std::to_string(kProbeListenMs) + " ms, " + std::to_string(silentFrames) + " of them flagged silent — "
+            "the stream carries silence (all samples are zero), which says nothing about support: the probed process "
+            "was simply not playing anything");
     }
 
     // --------------------------------------------------------------- stage 12
@@ -831,7 +848,9 @@ SupportInfo probeSupport() {
                               "IAudioClient obtained)");
         info.checks.push_back("IAudioClient.Initialize + Start: success");
         info.checks.push_back(run.pcmArrived
-                ? "The capture delivered packets with samples during the test window"
+                ? "The capture delivered packets during the short test window — the audio path works; whether "
+                  "anything audible was playing is a different question, and the standalone probe's [levels] lines "
+                  "answer it for a chosen application"
                 : "No samples arrived during the short test window — expected when the probed process plays nothing; "
                   "the standalone probe can be pointed at an application that does play audio");
         info.checks.push_back(run.engineWorks
