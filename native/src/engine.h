@@ -113,6 +113,15 @@ struct AppView {
     std::string blockedReason;
     /** state == covered: the application whose capture already contains it. */
     std::string coveredBy;
+    /** Output devices the application plays on (friendly names). */
+    std::vector<std::string> devices;
+    /**
+     * Windows reports that the application is playing, but its capture has
+     * delivered nothing but silence for seconds. Seen with some virtual audio
+     * devices, which process loopback does not tap: the viewers do not hear
+     * this application, and the user has to be told so.
+     */
+    bool silentCapture = false;
     /** Session based: the application is running but has no active stream. */
     bool running = false;
     /**
@@ -200,6 +209,8 @@ private:
         /** Published by the mix thread under mutex_, for apps(). */
         float peak = 0.0f;
         uint64_t starved = 0;
+        int64_t createdMs = 0;
+        int64_t lastSignalMs = 0;
         bool enteredMix = false;
         bool retired = false;
         std::string startError;

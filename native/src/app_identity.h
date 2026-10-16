@@ -64,6 +64,8 @@ struct AppGroup {
     bool playing = false;
     float peak = -1.0f;
     std::vector<std::string> sessionIds;
+    /** Output devices of the sessions (playing ones first). */
+    std::vector<std::string> devices;
 };
 
 /**
