@@ -254,4 +254,6 @@ export interface DiagnosticsReport {
     apps: AppInfo[];
     problems: string[];
     patch: { pidHook: boolean; modeHook: boolean; };
+    /** Plugin side state that decides whether a share can be redirected. */
+    runtime: { inVoice: boolean; engineRunning: boolean; renderPid: number; redirectActive: boolean; panels: Record<string, number>; actionError: string; };
 }
