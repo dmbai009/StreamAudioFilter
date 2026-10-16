@@ -124,6 +124,9 @@ struct AppView {
      * this application, and the user has to be told so.
      */
     bool silentCapture = false;
+    /** Diagnostics: the process trees captured, and the level at the capture input. */
+    std::vector<uint32_t> captureRoots;
+    float inputPeak = -1.0f;
     /** Session based: the application is running but has no active stream. */
     bool running = false;
     /**

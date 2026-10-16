@@ -228,6 +228,10 @@ function candidatePaths(): string[] {
     const candidates: string[] = [];
     const configured = String((RendererSettings.store as any)?.plugins?.StreamAudioFilter?.hostPath ?? "").trim();
     if (configured) candidates.push(configured);
+    // One folder per version: a new path carries none of the per executable
+    // state Windows remembers (volume, mute) for an older one, and an update
+    // never has to replace an executable that is still running.
+    candidates.push(join(hostDirectory(), PLUGIN_VERSION, HOST_FILE));
     candidates.push(join(hostDirectory(), HOST_FILE));
     // A Vencord source build keeps userplugins next to dist/.
     for (const relative of ["..", join("..", ".."), join("..", "..", "..")]) {

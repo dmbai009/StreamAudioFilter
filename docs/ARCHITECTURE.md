@@ -81,7 +81,7 @@ Discord: DiscordHook64.dll in the host ─► reads the mix before the mute ─�
 ```
 %APPDATA%\Vencord\dist\                          Vencord built with the plugin (+ saf-version.txt)
 %APPDATA%\Vencord\dist.saf-backup\               a Vencord build that was there before (if any)
-%APPDATA%\Vencord\streamAudioFilter\native\      saf-audio-host.exe
+%APPDATA%\Vencord\streamAudioFilter\native\<version>\  saf-audio-host.exe
 %APPDATA%\Vencord\streamAudioFilter\install.txt  what the installer did (for repair and removal)
 %LOCALAPPDATA%\Discord\app-*\resources\app.asar  Vencord's loader; Discord's own is _app.asar
 ```

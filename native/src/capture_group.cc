@@ -154,6 +154,14 @@ int GroupedCaptureSource::latencyMs() const {
     return latency;
 }
 
+float GroupedCaptureSource::inputPeak() const {
+    float peak = -1.0f;
+    for (const auto& part : parts_) {
+        if (part) peak = std::max(peak, part->inputPeak());
+    }
+    return peak;
+}
+
 bool GroupedCaptureSource::alive() const {
     for (const auto& part : parts_) {
         if (part && !part->alive()) return false;

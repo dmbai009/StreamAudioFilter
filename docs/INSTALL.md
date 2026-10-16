@@ -10,7 +10,7 @@
 The installer:
 
 - puts Vencord with the plugin into `%APPDATA%\Vencord\dist` and the audio host into
-  `%APPDATA%\Vencord\streamAudioFilter\native`;
+  `%APPDATA%\Vencord\streamAudioFilter\native\<version>`;
 - injects Vencord into Discord only if it is not injected yet (same method as Vencord's installer);
 - keeps an existing Vencord build as `dist.saf-backup` and restores it on uninstall;
 - never changes Vencord's settings (the plugin's rules live there too);
@@ -28,7 +28,7 @@ From the same release: `streamaudiofilter-vencord-dist.zip` and `saf-audio-host.
 
 1. Quit Discord. Have Vencord injected (official installer from vencord.dev).
 2. Replace `%APPDATA%\Vencord\dist\*` with the zip's `Vencord-dist\*`.
-3. Put `saf-audio-host.exe` into `%APPDATA%\Vencord\streamAudioFilter\native\`.
+3. Put `saf-audio-host.exe` into `%APPDATA%\Vencord\streamAudioFilter\native\<version>\` (e.g. `native\0.2.0\`).
 4. Start Discord.
 
 ## From source

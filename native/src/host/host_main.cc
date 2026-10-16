@@ -129,6 +129,8 @@ std::string appsJson(const std::vector<AppView>& apps) {
         object.string("coveredBy", app.coveredBy);
         object.raw("devices", jsonStringArray(app.devices));
         object.boolean("silentCapture", app.silentCapture);
+        object.raw("captureRoots", jsonNumberArray(app.captureRoots));
+        object.number("inputPeak", static_cast<int>(app.inputPeak * 1000.0f));
         object.number("starvedFrames", static_cast<long long>(app.starvedFrames));
         object.string("state", app.state);
         object.number("instances", static_cast<long long>(app.instances));

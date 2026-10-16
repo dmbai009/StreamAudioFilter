@@ -433,6 +433,8 @@ std::vector<AppView> Engine::apps() {
         float peak = 0.0f;
         int64_t createdMs = 0;
         int64_t lastSignalMs = 0;
+        std::vector<uint32_t> roots;
+        float inputPeak = -1.0f;
     };
 
     std::vector<AppGroup> snapshot;
@@ -453,7 +455,9 @@ std::vector<AppView> Engine::apps() {
                 info.format = stream->source->formatDescription();
                 info.latencyMs = stream->source->latencyMs();
                 info.error = stream->source->lastError();
+                info.inputPeak = stream->source->inputPeak();
             }
+            info.roots = stream->rootPids;
             info.peak = stream->peak;
             info.createdMs = stream->createdMs;
             info.lastSignalMs = stream->lastSignalMs;
@@ -502,6 +506,8 @@ std::vector<AppView> Engine::apps() {
             view.latencyMs = stream.latencyMs;
             view.error = stream.error;
             if (stream.peak > view.peak) view.peak = stream.peak;
+            view.captureRoots = stream.roots;
+            view.inputPeak = stream.inputPeak;
             view.silentCapture = mixing && stream.captured && group.playing && group.peak > 0.01f
                 && now - stream.createdMs > kSilentCaptureMs && now - stream.lastSignalMs > kSilentCaptureMs;
         }
