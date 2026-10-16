@@ -1,13 +1,7 @@
 /*
- * StreamAudioFilter — tests for saf-audio-host through its real line protocol.
+ * Vencord, a Discord client mod
+ * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
- *
- * Starts the built host with the signal generator backend and the test
- * output, and checks what the plugin relies on: version/protocol handshake,
- * application listing, the capture gate, rule changes reaching the mix
- * (measured on the output level), Discord's protection, and a clean exit when
- * stdin closes. Usage:
- *     node tests/host.test.mjs <path to saf-audio-host>
  */
 
 import assert from "node:assert/strict";
@@ -77,7 +71,7 @@ test("listing, capture gate, rules reach the mix, output level", async () => {
     await send("rules", 0, 0);
     await sleep(600);
 
-    let apps = (await send("apps")).apps;
+    let { apps } = await send("apps");
     assert.deepEqual(apps.map(a => a.appKey).sort(), ["mock:game", "mock:music"]);
     assert.ok(apps.every(a => !a.captured), "nothing is captured while the gate is closed");
 
@@ -110,7 +104,7 @@ test("Discord's process tree is never captured", async () => {
     await send("mockApps", app("mock:discord", "Discord", 5001, 5000), app("mock:game", "Game", 4200));
     await send("rules", 0, 1);
     await sleep(1200);
-    const apps = (await send("apps")).apps;
+    const { apps } = await send("apps");
     const discord = apps.find(a => a.appKey === "mock:discord");
     assert.equal(discord.capturable, false);
     assert.equal(discord.captured, false);

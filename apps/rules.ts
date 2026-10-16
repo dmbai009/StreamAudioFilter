@@ -26,9 +26,28 @@ export function emptyState(mode: FilterMode = "allExcept"): RulesState {
     return { mode, rules: {}, version: RULES_VERSION };
 }
 
+/**
+ * Applications that play the audio of *other* applications again (virtual
+ * cable repeaters, mixers). Sending one of them would send everything it
+ * re-plays, excluded applications included, so they are blocked unless the
+ * user explicitly allows them — in both modes.
+ */
+const AUDIO_ROUTERS = [
+    "audiorepeater.exe", "audiorepeater_ks.exe",
+    "voicemeeter.exe", "voicemeeter_x64.exe", "voicemeeterpro.exe", "voicemeeterpro_x64.exe", "voicemeeter8.exe", "voicemeeter8x64.exe",
+    "equalizerapo.exe", "soundswitch.exe", "nvidia broadcast.exe"
+];
+
+export function isAudioRouter(appKey: string): boolean {
+    if (!appKey.startsWith("exe:")) return false;
+    const name = appKey.slice(appKey.lastIndexOf("\\") + 1).toLowerCase();
+    return AUDIO_ROUTERS.includes(name);
+}
+
 export function resolveTransmit(state: RulesState, appKey: string): boolean {
     const rule = state.rules[appKey];
     if (rule) return rule.transmit;
+    if (isAudioRouter(appKey)) return false;
     return state.mode === "allExcept";
 }
 
@@ -64,8 +83,13 @@ export function forgetApp(state: RulesState, appKey: string): RulesState {
     return { ...state, rules };
 }
 
-export function toPayload(state: RulesState, active: boolean): RuleSetPayload {
+/**
+ * @param liveKeys app keys currently known: audio routers among them get an
+ *                 explicit "blocked" so the host applies the same default.
+ */
+export function toPayload(state: RulesState, active: boolean, liveKeys: string[] = []): RuleSetPayload {
     const overrides: Record<string, boolean> = {};
+    for (const key of liveKeys) if (isAudioRouter(key)) overrides[key] = false;
     for (const [key, rule] of Object.entries(state.rules)) overrides[key] = rule.transmit;
     return { mode: state.mode === "onlySelected" ? 1 : 0, overrides, active };
 }
@@ -122,7 +146,8 @@ export function buildAppList(live: AppInfo[], state: RulesState): AppListEntry[]
             exeName: app.exeName,
             section: app.playing ? "current" : "idle",
             allowed: app.capturable && resolveTransmit(state, app.appKey),
-            byDefault: !hasRule(state, app.appKey),
+            byDefault: app.capturable && !hasRule(state, app.appKey),
+            router: isAudioRouter(app.appKey),
             capturable: app.capturable,
             ephemeral: app.ephemeral,
             state: app.state,
@@ -150,6 +175,7 @@ export function buildAppList(live: AppInfo[], state: RulesState): AppListEntry[]
             section: "closed",
             allowed: rule.transmit,
             byDefault: false,
+            router: isAudioRouter(key),
             capturable: true,
             ephemeral: false,
             state: "closed",

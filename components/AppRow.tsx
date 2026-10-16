@@ -28,12 +28,12 @@ function statusOf(entry: AppListEntry, share: ShareAudio): { text: string; tone:
 
     if (entry.section === "closed") return make("state.closed", "muted");
     if (!entry.capturable) return make("state.unsupported", "muted", entry.notCapturableReason);
-    if (!entry.allowed) return make("state.excluded", "muted", t("row.switch.off"));
+    if (!entry.allowed) return make("state.excluded", "muted", entry.router && entry.byDefault ? t("row.router") : t("row.switch.off"));
     if (entry.state === "blocked") return make("state.blocked", "danger", entry.blockedReason);
     if (entry.state === "error") return make("state.error", "danger", entry.error);
     if (entry.silentCapture) return make("state.silentCapture", "warn", t("problem.silentCapture", { app: entry.title, device: entry.devices[0] ?? "?" }));
     if (entry.state === "covered") return make("state.covered", "neutral", t("state.covered.hint", { app: entry.coveredBy }), { app: entry.coveredBy });
-    if (share === "filtered") {
+    if (share === "filtered" && entry.section === "current") {
         return entry.captured
             ? make("state.sending", "ok", t("state.sending.hint"))
             : make("state.waiting", "neutral", t("state.waiting.hint"));

@@ -30,7 +30,7 @@ import { settings } from "../settings";
 import { decideSoundshare, type GoLiveAction, readGoLiveAction } from "../stream/soundshare";
 import type { AppInfo, AppListEntry, DiagnosticsReport, HostStats, NativeEnvironment, RulesState, ShareAudio, ShareStatus } from "../types";
 import { PLUGIN_VERSION } from "../version";
-import { buildAppList, normaliseState, resetRules, setMode as setModeInState, setTransmit as setTransmitInState, toPayload } from "./rules";
+import { buildAppList, isAudioRouter, normaliseState, resetRules, setMode as setModeInState, setTransmit as setTransmitInState, toPayload } from "./rules";
 
 const STORE_KEY = "StreamAudioFilter_rules";
 const POLL_INTERVAL_MS = 1000;
@@ -304,7 +304,7 @@ class Store {
 
     private async applyRules(): Promise<void> {
         if (!this.state.engineRunning) return;
-        const result = await Native.setRules(toPayload(this.state.rules, this.redirectActive));
+        const result = await Native.setRules(toPayload(this.state.rules, this.redirectActive, this.state.apps.map(app => app.appKey)));
         if (!result.ok && result.error) this.set({ actionError: result.error });
     }
 
@@ -398,7 +398,9 @@ class Store {
                 void this.refreshHost().then(() => this.syncHost());
                 return;
             }
+            const newRouter = apps.some(app => isAudioRouter(app.appKey) && !this.state.apps.some(old => old.appKey === app.appKey));
             this.set({ apps, stats });
+            if (newRouter) void this.applyRules();
             this.updateShareFromStats(stats);
             if (apps.length) void this.loadIcons(apps);
         } finally {

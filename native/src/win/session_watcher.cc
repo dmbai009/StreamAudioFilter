@@ -196,6 +196,10 @@ private:
 
             if (info.isSystemSounds) {
                 info.displayName = "System sounds";
+                // Played by the audio service itself (pid 0): process loopback
+                // needs a real process, so this session can not be captured.
+                info.capturable = false;
+                info.notCapturableReason = "Windows system sounds are played by the audio service, not by an application, and can not be captured separately.";
                 info.exeName = "system";
             } else {
                 info.exePath = processImagePath(pid);

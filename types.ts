@@ -182,6 +182,8 @@ export interface AppListEntry {
     allowed: boolean;
     /** The switch value comes from the mode, not from a saved choice. */
     byDefault: boolean;
+    /** Re-plays other applications' audio (blocked by default). */
+    router: boolean;
     capturable: boolean;
     ephemeral: boolean;
     state: string;

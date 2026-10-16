@@ -144,3 +144,21 @@ test("live state passes through to the list", () => {
     assert.equal(entry.blockedReason, "Game runs inside");
     assert.equal(entry.instances, 2);
 });
+
+test("audio routers are blocked by default in both modes, but can be allowed", () => {
+    const repeater = "exe:c:\\program files\\virtual audio cable\\audiorepeater.exe";
+    let state = emptyState("allExcept");
+    assert.equal(resolveTransmit(state, repeater), false, "a repeater re-plays everything: never sent by default");
+    assert.deepEqual(toPayload(state, true, [repeater, "exe:c:\\a.exe"]).overrides, { [repeater]: false });
+    const [entry] = buildAppList([app({ appKey: repeater })], state);
+    assert.equal(entry.router, true);
+    assert.equal(entry.allowed, false);
+    state = setTransmit(state, { appKey: repeater }, true);
+    assert.equal(resolveTransmit(state, repeater), true, "an explicit choice wins");
+    assert.deepEqual(toPayload(state, true, [repeater]).overrides, { [repeater]: true });
+});
+
+test("non capturable apps are not marked as following the default", () => {
+    const [entry] = buildAppList([app({ appKey: "system:sounds", capturable: false })], emptyState());
+    assert.equal(entry.byDefault, false);
+});
