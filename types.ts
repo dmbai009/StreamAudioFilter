@@ -5,7 +5,6 @@
  */
 
 /**
- *
  * StreamAudioFilter — per application audio filtering for screen shares.
  * Types shared between the renderer (index.tsx and everything below it) and the
  * main process side (native.ts). This file must stay free of imports so both
@@ -15,20 +14,19 @@
 /** Mode A: everything is transmitted unless it was switched off. */
 export type FilterMode = "allExcept" | "onlySelected";
 
-/** What the UI sends to the native engine. */
+/** What the UI sends to the audio host. */
 export interface RuleSetPayload {
     /** 0 = allExcept, 1 = onlySelected (matches saf::RuleSet::Mode). */
     mode: 0 | 1;
     overrides: Record<string, boolean>;
     /**
-     * False while no screen share is running: the engine keeps watching the
-     * application list but captures nothing, so the plugin stays quiet in the
-     * background.
+     * Capture gate: false while the plugin does not provide the audio of a
+     * share. The host then only lists applications and captures nothing.
      */
     active: boolean;
 }
 
-/** One application, as reported by the native engine. */
+/** One application, as reported by the audio host. */
 export interface AppInfo {
     appKey: string;
     displayName: string;
@@ -39,25 +37,29 @@ export interface AppInfo {
     capturable: boolean;
     /** The application could not be identified for a persistent rule. */
     ephemeral: boolean;
-    /** Effective decision after mode + overrides. */
+    /** Effective decision after mode + overrides, while the gate is open. */
     transmitting: boolean;
-    /** A capture stream currently exists. */
+    /** A capture of this application is part of the mix. */
     captured: boolean;
-    /** Peak level 0..1 of the last mixed block (or of the session meter). */
+    /** Peak level 0..1 (capture level, or the Windows session meter). */
     peak: number;
     latencyMs: number;
     format: string;
     error: string;
     notCapturableReason: string;
+    /** Set when a transmitted application can not be sent (process tree conflict). */
+    blockedReason: string;
+    /** Set when the application is already contained in another application's capture. */
+    coveredBy: string;
     starvedFrames: number;
-    /** transmitting | excluded | silent | error | unsupported */
+    /** transmitting | covered | excluded | blocked | silent | error | unsupported */
     state: string;
-    /**
-     * Independent instances (process trees) of this application. More than one
-     * means the application was started twice: both instances are captured and
-     * summed exactly once.
-     */
+    /** Independent instances (process trees) of this application. */
     instances: number;
+    /** Output devices the application plays on. */
+    devices: string[];
+    /** Windows says the application plays, but its capture is pure silence. */
+    silentCapture: boolean;
 }
 
 export interface EngineStats {
@@ -69,13 +71,33 @@ export interface EngineStats {
     blockMs: number;
     blocksMixed: number;
     outputFrames: number;
-    outputDroppedFrames: number;
     starvedFrames: number;
     limitedBlocks: number;
     clampedSamples: number;
     activeStreams: number;
-    outputBufferedFrames: number;
     warnings: string[];
+}
+
+/** The host's output: the muted session Discord takes the share audio from. */
+export interface OutputStats {
+    running: boolean;
+    kind: string;
+    device: string;
+    format: string;
+    error: string;
+    renderedFrames: number;
+    /** Peak 0..1 of the last rendered second: what the viewers receive. */
+    peak: number;
+    sessionMuted: boolean;
+    remutes: number;
+    /** Discord's soundshare hook is loaded into the host: Discord reads this audio. */
+    discordAttached: boolean;
+    restarts: number;
+}
+
+export interface HostStats {
+    engine: EngineStats | null;
+    output: OutputStats | null;
 }
 
 export interface SupportInfo {
@@ -88,36 +110,33 @@ export interface SupportInfo {
     platform: string;
 }
 
-export interface AddonInfo {
-    loaded: boolean;
+/** The audio host process and how it was found. */
+export interface HostInfo {
+    found: boolean;
+    running: boolean;
     path: string;
     version: string;
+    protocol: number;
+    pid: number;
     error: string;
     /** Every path that was tried, in order. */
     triedPaths: string[];
-    napi: number;
 }
 
 export interface NativeEnvironment {
     platform: string;
     arch: string;
     isWindows: boolean;
-    addon: AddonInfo;
+    host: HostInfo;
     support: SupportInfo;
-    /** Where the built .node file should be placed. */
-    dataDir: string;
-    /** Path of the Discord executable, excluded by default to avoid echo. */
-    discordExecutable: string;
+    /** Where the host executable is expected. */
+    hostDir: string;
+    /** Version of the plugin's TypeScript part (must match the host). */
+    pluginVersion: string;
+    /** Host protocol this plugin speaks. */
+    pluginProtocol: number;
     /** True while the scripted test backend is in use. */
     mock: boolean;
-}
-
-export interface EngineStartOptions {
-    sampleRate: number;
-    blockMs: number;
-    maxStreams: number;
-    outputBufferMs: number;
-    backend?: "auto" | "wasapi" | "mock";
 }
 
 export interface StartResult {
@@ -136,7 +155,6 @@ export interface MockApp {
     parentPid: number;
     playing: boolean;
     capturable: boolean;
-    notCapturableReason?: string;
 }
 
 /** Persisted rule of one application. */
@@ -151,50 +169,82 @@ export interface AppRule {
 export interface RulesState {
     mode: FilterMode;
     rules: Record<string, AppRule>;
-    /** Set once the built in default exclusions have been seeded. */
     version: number;
 }
 
 export interface AppListEntry {
     appKey: string;
     title: string;
-    subtitle: string;
+    exeName: string;
     /** current = has audio right now, idle = running without audio, closed = saved rule only */
     section: "current" | "idle" | "closed";
-    transmitting: boolean;
+    /** The switch: true = the viewers may hear this application. */
+    allowed: boolean;
+    /** The switch value comes from the mode, not from a saved choice. */
+    byDefault: boolean;
     capturable: boolean;
     ephemeral: boolean;
     state: string;
+    captured: boolean;
     peak: number;
-    details: string;
+    instances: number;
+    devices: string[];
+    silentCapture: boolean;
+    format: string;
+    latencyMs: number;
     error: string;
+    notCapturableReason: string;
+    blockedReason: string;
+    coveredBy: string;
     exePath: string;
 }
 
-export interface StreamStatus {
-    active: boolean;
-    filtering: boolean;
-    /**
-     * What the viewers actually receive: none (no share audio asked for),
-     * filtered (our mix), unfiltered (Discord's own capture: the filter is off
-     * or the user explicitly allowed the fallback), muted (filtering was asked
-     * for and could not be applied, so the audio was removed — fail closed).
-     */
-    audio: "none" | "filtered" | "unfiltered" | "muted";
-    /** Why the audio is in that state (shown in the panel). */
-    audioReason: string;
-    /** Why filtering is inactive, when the user asked for it. */
+/**
+ * What happens to the audio of the user's own screen share, from the point of
+ * view of the viewers. Every value means something different for privacy, so
+ * the UI must be able to tell all of them apart:
+ *
+ *   idle         no own share
+ *   noAudio      sharing without audio (Discord's "Sound" switch is off)
+ *   window       sharing a window: Discord sends that application's own audio;
+ *                the plugin does not take part
+ *   off          filtering switched off by the user: Discord sends all system audio
+ *   starting     the plugin took over the share audio, waiting for Discord to attach
+ *   filtered     confirmed: Discord reads the plugin's filtered mix
+ *   attachFailed the plugin took over, but Discord did not attach to the mix
+ *                (the viewers most likely hear nothing)
+ *   muted        filtering wanted but impossible; the share has no audio (fail closed)
+ *   unfiltered   filtering impossible, and the user allowed plain system audio
+ *   uncontrolled a share started without passing through the plugin (Discord changed):
+ *                the plugin does not know or control what the viewers hear
+ */
+export type ShareAudio =
+    | "idle"
+    | "noAudio"
+    | "window"
+    | "off"
+    | "starting"
+    | "filtered"
+    | "attachFailed"
+    | "muted"
+    | "unfiltered"
+    | "uncontrolled";
+
+export interface ShareStatus {
+    audio: ShareAudio;
+    /** Technical reason for the state (shown in the details). */
     reason: string;
-    startedAt: number;
-    underruns: number;
-    pipelinedMs: number;
-    sampleRate: number;
+    /** When the own share started (ms), 0 when idle. */
+    since: number;
 }
 
 export interface DiagnosticsReport {
-    environment: NativeEnvironment;
-    engine: EngineStats | null;
+    generatedAt: string;
+    pluginVersion: string;
+    environment: NativeEnvironment | null;
+    share: ShareStatus;
+    stats: HostStats | null;
     apps: AppInfo[];
-    stream: StreamStatus;
-    lastError: string;
+    problems: string[];
+    patch: { pidHook: boolean; modeHook: boolean; };
 }

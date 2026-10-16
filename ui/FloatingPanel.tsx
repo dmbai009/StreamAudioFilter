@@ -5,152 +5,126 @@
  */
 
 /**
- * StreamAudioFilter — per application audio filtering for screen shares.
- * Small floating window with the same controls as the settings page.
+ * StreamAudioFilter — optional floating panel (setting "showFloatingPanel").
  *
- * It exists because Discord's own "go live" window and the stream interface can
- * not be extended safely from a user plugin: their internals are not part of any
- * stable API. Instead of patching them blindly, the compact panel appears as soon
- * as Discord asks for the audio of a screen share, which is exactly the moment
- * the filter set usually needs adjusting.
- *
- * While a stream is running the panel collapses to a small badge (configurable),
- * so it does not cover the shared screen more than necessary.
+ * It starts as a small status pill and only expands when the user asks. It
+ * hides itself while the settings page or the quick panel is open, so the
+ * plugin never shows two full interfaces at once. It is dragged by its title,
+ * stays inside the window when the window or the zoom level changes, and its
+ * position is remembered per device (localStorage).
  */
 
 import ErrorBoundary from "@components/ErrorBoundary";
-import { Flex } from "@components/Flex";
-import { Span } from "@components/Span";
 import { useEffect, useRef, useState } from "@webpack/common";
-import type { CSSProperties } from "react";
 
 import { store, useStoreState } from "../apps/store";
+import { t } from "../i18n";
 import { settings } from "../settings";
-import { FilterControls } from "./FilterControls";
-import { Icon } from "./icons";
+import { FilterControls, ProblemsSummary, ShareStatusCard } from "./FilterControls";
+import { Icon, iconKindOf } from "./icons";
 
 const cl = (name: string) => `vc-saf-${name}`;
+const POSITION_KEY = "StreamAudioFilter_floatingPosition";
+const MARGIN = 8;
 
-interface Position {
-    x: number;
-    y: number;
+interface Position { x: number; y: number; }
+
+function loadPosition(): Position | null {
+    try {
+        const value = JSON.parse(localStorage.getItem(POSITION_KEY) ?? "null");
+        return value && typeof value.x === "number" && typeof value.y === "number" ? value : null;
+    } catch {
+        return null;
+    }
 }
 
-const DEFAULT_POSITION: Position = { x: -1, y: -1 };
+function savePosition(position: Position) {
+    try {
+        localStorage.setItem(POSITION_KEY, JSON.stringify(position));
+    } catch { }
+}
 
-function clampPosition(position: Position): Position {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
+function clamp(position: Position, element: HTMLElement | null): Position {
+    const width = element?.offsetWidth ?? 240;
+    const height = element?.offsetHeight ?? 40;
     return {
-        x: Math.min(Math.max(position.x, 8), Math.max(8, width - 360)),
-        y: Math.min(Math.max(position.y, 8), Math.max(8, height - 80))
+        x: Math.min(Math.max(position.x, MARGIN), Math.max(MARGIN, window.innerWidth - width - MARGIN)),
+        y: Math.min(Math.max(position.y, MARGIN), Math.max(MARGIN, window.innerHeight - height - MARGIN))
     };
 }
 
 export const FloatingPanel = ErrorBoundary.wrap(function FloatingPanel() {
     const state = useStoreState();
-    const [collapsed, setCollapsed] = useState(false);
-    const [visible, setVisible] = useState(false);
-    const [position, setPosition] = useState<Position>(DEFAULT_POSITION);
-    const dragRef = useRef<{ startX: number; startY: number; originX: number; originY: number; } | null>(null);
+    const [expanded, setExpanded] = useState(false);
+    const [position, setPosition] = useState<Position | null>(loadPosition);
+    const panelRef = useRef<HTMLDivElement | null>(null);
+    const dragRef = useRef<{ dx: number; dy: number; } | null>(null);
 
-    // The panel is shown when the user asks for it, and whenever Discord starts
-    // asking for the audio of a screen share.
-    useEffect(() => {
-        setVisible(true);
-        return store.openPanel();
-    }, []);
+    // Keep the list polling only while the panel is expanded.
+    useEffect(() => (expanded ? store.openPanel("floating") : undefined), [expanded]);
 
     useEffect(() => {
-        if (state.stream.active) {
-            setCollapsed(settings.store.collapseDuringStream ?? true);
-            setVisible(true);
-        }
-    }, [state.stream.active]);
-
-    useEffect(() => {
-        function onMove(event: MouseEvent) {
+        const onMove = (event: MouseEvent) => {
             const drag = dragRef.current;
             if (!drag) return;
             event.preventDefault();
-            setPosition(clampPosition({
-                x: drag.originX + (event.clientX - drag.startX),
-                y: drag.originY + (event.clientY - drag.startY)
-            }));
-        }
-        function onUp() {
+            setPosition(clamp({ x: event.clientX - drag.dx, y: event.clientY - drag.dy }, panelRef.current));
+        };
+        const onUp = () => {
+            if (!dragRef.current) return;
             dragRef.current = null;
-        }
-
+            setPosition(current => {
+                if (current) savePosition(current);
+                return current;
+            });
+        };
+        const onResize = () => setPosition(current => current && clamp(current, panelRef.current));
         window.addEventListener("mousemove", onMove);
         window.addEventListener("mouseup", onUp);
+        window.addEventListener("resize", onResize);
         return () => {
             window.removeEventListener("mousemove", onMove);
             window.removeEventListener("mouseup", onUp);
+            window.removeEventListener("resize", onResize);
         };
     }, []);
 
-    if (!visible) return null;
+    // After expanding/collapsing the size changes: keep it inside the window.
+    useEffect(() => { setPosition(current => current && clamp(current, panelRef.current)); }, [expanded]);
 
-    const style: CSSProperties = {
-        left: position.x >= 0 ? position.x : undefined,
-        top: position.y >= 0 ? position.y : undefined,
-        right: position.x >= 0 ? undefined : 24,
-        bottom: position.y >= 0 ? undefined : 96
-    };
+    if (state.panels.settings > 0 || state.panels.popout > 0) return null;
 
-    const captured = state.apps.filter(app => app.captured).length;
+    const style = position ? { left: position.x, top: position.y } : { right: 16, bottom: 72 };
 
     return (
-        <div className={cl("floating")} style={style} data-collapsed={collapsed ? "true" : "false"}>
+        <div ref={panelRef} className={cl("floating")} style={style} data-expanded={expanded ? "true" : "false"}>
             <div
-                className={cl("floating-header")}
+                className={cl("floating-head")}
                 onMouseDown={event => {
-                    const rect = (event.currentTarget.parentElement as HTMLElement).getBoundingClientRect();
-                    dragRef.current = {
-                        startX: event.clientX,
-                        startY: event.clientY,
-                        originX: rect.left,
-                        originY: rect.top
-                    };
-                    setPosition({ x: rect.left, y: rect.top });
+                    if ((event.target as HTMLElement).closest("button")) return;
+                    const rect = panelRef.current!.getBoundingClientRect();
+                    dragRef.current = { dx: event.clientX - rect.left, dy: event.clientY - rect.top };
                 }}
             >
-                <Flex flexDirection="row" gap="0.4em" alignItems="center">
-                    <Icon kind={state.stream.filtering ? "on" : state.stream.active ? "warn" : "off"} />
-                    <Span size="sm" weight="semibold">Stream audio</Span>
-                    {collapsed && (
-                        <Span size="xs" className={cl("muted")}>
-                            {state.stream.active ? `${captured} cap.` : "no share"}
-                        </Span>
-                    )}
-                </Flex>
-                <Flex flexDirection="row" gap="0.2em" alignItems="center">
-                    <button
-                        className={cl("floating-btn")}
-                        title={collapsed ? "Expand" : "Collapse"}
-                        onClick={() => setCollapsed(!collapsed)}
-                    >
-                        {collapsed ? "▾" : "▴"}
-                    </button>
-                    <button
-                        className={cl("floating-btn")}
-                        title="Hide the panel (enable it again in the plugin settings)"
-                        onClick={() => {
-                            setVisible(false);
-                            settings.store.showFloatingPanel = false;
-                        }}
-                    >
-                        ✕
-                    </button>
-                </Flex>
+                <Icon kind={iconKindOf(state.share.audio)} size={18} />
+                <span className={cl("floating-title")}>
+                    {state.share.audio === "idle" ? `${t("title")} · ${t("floating.noShare")}` : t(`share.${state.share.audio}`)}
+                </span>
+                <button className={cl("icon-button")} title={expanded ? t("action.collapse") : t("action.expand")} onClick={() => setExpanded(!expanded)}>
+                    {expanded ? "▾" : "▴"}
+                </button>
+                <button className={cl("icon-button")} title={t("action.close")} onClick={() => { settings.store.showFloatingPanel = false; }}>
+                    ✕
+                </button>
             </div>
-
-            {!collapsed && (
-                <div className={cl("floating-body")}>
-                    <FilterControls compact />
-                </div>
-            )}
+            {expanded
+                ? <div className={cl("floating-body")}><FilterControls compact /></div>
+                : (state.share.audio !== "idle" && state.share.audio !== "filtered") && (
+                    <div className={cl("floating-body")}>
+                        <ShareStatusCard state={state} compact />
+                        <ProblemsSummary state={state} />
+                    </div>
+                )}
         </div>
     );
 }, { noop: true });

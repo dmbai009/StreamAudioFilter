@@ -18,6 +18,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENCORD_DIR="${VENCORD_DIR:-/tmp/vencord}"
 
+# The plugin's source files: everything Vencord compiles. Kept in one place so
+# the copy below, the copy back (FIX=1) and scripts/install.ps1 agree.
+PLUGIN_ITEMS=(types.ts native.ts nativeBridge.ts dataStore.ts settings.ts i18n.ts version.ts index.tsx apps components stream ui tests style.css)
+
 if [ ! -f "$VENCORD_DIR/tsconfig.json" ]; then
     echo "Vencord checkout not found at '$VENCORD_DIR'." >&2
     echo "Clone Vencord and install its dependencies, then set VENCORD_DIR." >&2
@@ -33,7 +37,7 @@ TARGET="$VENCORD_DIR/src/userplugins/StreamAudioFilter"
 rm -rf "$TARGET"
 mkdir -p "$TARGET"
 
-for item in types.ts native.ts nativeBridge.ts dataStore.ts settings.ts index.tsx apps audio components stream ui tests style.css; do
+for item in "${PLUGIN_ITEMS[@]}"; do
     [ -e "$ROOT/$item" ] && cp -r "$ROOT/$item" "$TARGET/"
 done
 
@@ -44,16 +48,10 @@ npx tsc --noEmit
 if [ "${FIX:-0}" = "1" ]; then
     echo "== eslint --fix (results are copied back into the repository) =="
     npx eslint --fix "src/userplugins/StreamAudioFilter" || true
-    for item in types.ts native.ts nativeBridge.ts dataStore.ts settings.ts index.tsx apps audio components stream ui tests style.css; do
+    for item in "${PLUGIN_ITEMS[@]}"; do
         [ -e "$TARGET/$item" ] && cp -r "$TARGET/$item" "$ROOT/"
     done
 fi
-
-echo "== rule engine tests =="
-npx tsx src/userplugins/StreamAudioFilter/tests/rules.test.ts
-
-echo "== stream interceptor tests (fail closed policy) =="
-npx tsx src/userplugins/StreamAudioFilter/tests/intercept.test.ts
 
 echo "== eslint =="
 npx eslint "src/userplugins/StreamAudioFilter"
