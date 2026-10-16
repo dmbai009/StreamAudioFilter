@@ -310,6 +310,10 @@ void Engine::applyPlan() {
 
         snapshot_ = groups;
         plans_ = plans;
+        for (auto it = startErrors_.begin(); it != startErrors_.end();) {
+            if (wantedRoots(it->first)) ++it;
+            else it = startErrors_.erase(it);
+        }
 
         // 1. Retire streams that must not be transmitted any more.
         for (auto& [key, stream] : streams_) {
