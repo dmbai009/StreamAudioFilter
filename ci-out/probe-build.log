@@ -1,5 +1,0 @@
-main.cc
-tools\process_loopback_probe\main.cc(1602): warning C4996: '_wfopen': This function or variable may be unsafe. Consider using _wfopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
-tools\process_loopback_probe\main.cc(1603): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
-hr_advice.cc
-Generating Code...

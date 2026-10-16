@@ -2,9 +2,14 @@ name: Release
 
 # Publishing is driven by a tag, never by a developer machine: the files that
 # reach users are the ones these runs built, after the same gates as a normal
-# commit (portable DSP + engine tests, TypeScript tests, MSVC build and the tests
-# compiled by cl.exe, and a prebuilt Vencord bundle that is checked for the
-# plugin). If any of them fails, no release is created.
+# commit. If any gate fails, no release is created.
+#
+# Assets (all from one commit, one version):
+#   StreamAudioFilter-Setup.exe          recommended: install / repair / uninstall
+#   streamaudiofilter-vencord-dist.zip   manual installation: Vencord + plugin
+#   saf-audio-host.exe                   manual installation: the audio host
+#   process-loopback-probe.exe           diagnosis without Discord
+#   SHA256SUMS.txt
 on:
   push:
     tags:
@@ -12,260 +17,121 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to publish (must already exist, e.g. v0.1.0)"
+        description: "Tag to publish (must already exist, e.g. v0.2.0)"
         required: true
 
 jobs:
-  # Reuses the gate workflow so a release can never be built from code that a
-  # commit build would have rejected.
   gate:
     name: Build and test
-    permissions:
-      contents: write
     uses: ./.github/workflows/native.yml
 
-  # Reuses the bundle workflow: the "no build needed" archive is built and
-  # verified there, and this job only republishes it.
   bundle:
     name: Prebuilt Vencord bundle
-    permissions:
-      contents: write
     uses: ./.github/workflows/bundle.yml
 
-  publish:
-    name: Publish the addon and the bundle
+  installer:
+    name: StreamAudioFilter-Setup.exe
     needs: [gate, bundle]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: saf-audio-host-windows-x64
+          path: ${{ runner.temp }}/host
+      - uses: actions/download-artifact@v4
+        with:
+          name: streamaudiofilter-vencord-bundle
+          path: ${{ runner.temp }}/bundle
+
+      - name: Assemble the payload and build the installer
+        shell: pwsh
+        run: |
+          $payload = Join-Path $env:RUNNER_TEMP "payload"
+          $unpacked = Join-Path $env:RUNNER_TEMP "unpacked"
+          Expand-Archive (Join-Path $env:RUNNER_TEMP "bundle\streamaudiofilter-vencord-dist.zip") $unpacked
+          New-Item -ItemType Directory -Force (Join-Path $payload "dist") | Out-Null
+          Copy-Item (Join-Path $unpacked "Vencord-dist\*") (Join-Path $payload "dist")
+          Copy-Item (Join-Path $env:RUNNER_TEMP "host\saf-audio-host.exe") $payload
+          $version = (Select-String -Path version.ts -Pattern 'PLUGIN_VERSION = "([^"]+)"').Matches[0].Groups[1].Value
+          $protocol = (Select-String -Path version.ts -Pattern 'PROTOCOL_VERSION = (\d+)').Matches[0].Groups[1].Value
+          $vencord = (Select-String -Path (Join-Path $unpacked "VENCORD-VERSION.txt") -Pattern 'Vencord ref:\s+(\S+)').Matches[0].Groups[1].Value
+          Set-Content (Join-Path $payload "saf-version.txt") "version=$version`nprotocol=$protocol`nvencord=$vencord"
+          # pack-payload.mjs refuses parts whose versions differ.
+          ./scripts/build-host.ps1 -Setup -PayloadDir $payload
+          Copy-Item native\build\setup\saf-setup.exe (Join-Path $env:RUNNER_TEMP "StreamAudioFilter-Setup.exe")
+          # The installer that is published answers its own version.
+          $answer = & (Join-Path $env:RUNNER_TEMP "StreamAudioFilter-Setup.exe") --version | Out-String
+          if ($answer.Trim() -ne $version) { throw "the installer reports '$($answer.Trim())', expected $version" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: streamaudiofilter-setup
+          path: ${{ runner.temp }}/StreamAudioFilter-Setup.exe
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [gate, bundle, installer]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      # No checkout runs in this job, so gh cannot infer the repository from a
-      # git remote: without this every gh command dies with
-      # "fatal: not a git repository".
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
-      - name: Download the addon built by the gate
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: streamaudiofilter-node-windows-x64
           path: dist
+          merge-multiple: true
 
-      - name: Download the prebuilt bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: streamaudiofilter-vencord-bundle
-          path: dist
-
-      - name: Download the probe built by the gate
-        uses: actions/download-artifact@v4
-        with:
-          name: streamaudiofilter-probe-windows-x64
-          path: dist
-
-      - name: Verify, checksum and describe both assets
+      - name: Verify and checksum
         run: |
           set -euo pipefail
           cd dist
-          for asset in streamaudiofilter.node streamaudiofilter-vencord-dist.zip process-loopback-probe.exe; do
-              test -f "$asset" || { echo "::error::$asset is missing from the artifacts"; exit 1; }
-              ls -l "$asset"
+          for f in StreamAudioFilter-Setup.exe streamaudiofilter-vencord-dist.zip saf-audio-host.exe process-loopback-probe.exe; do
+              test -s "$f" || { echo "::error::$f is missing"; exit 1; }
           done
-          # The addon must be a real Windows binary, not an error page or an LFS stub.
-          for binary in streamaudiofilter.node process-loopback-probe.exe; do
-              head -c 2 "$binary" | od -An -tx1 | grep -qi "4d 5a" \
-                  || { echo "::error::$binary is not a PE binary"; exit 1; }
+          for f in StreamAudioFilter-Setup.exe saf-audio-host.exe process-loopback-probe.exe; do
+              head -c 2 "$f" | grep -q MZ || { echo "::error::$f is not a Windows executable"; exit 1; }
           done
-          unzip -l streamaudiofilter-vencord-dist.zip | grep -q "Vencord-dist/renderer.js" \
-              || { echo "::error::the bundle does not look like a Vencord dist"; exit 1; }
-          rm -f streamaudiofilter-vencord-dist.zip.sha256
-          sha256sum streamaudiofilter.node streamaudiofilter-vencord-dist.zip process-loopback-probe.exe | tee SHA256SUMS.txt
+          sha256sum StreamAudioFilter-Setup.exe streamaudiofilter-vencord-dist.zip saf-audio-host.exe process-loopback-probe.exe | tee SHA256SUMS.txt
 
-      - name: Write the install note and the release notes
+      - name: Release notes
         run: |
-          set -euo pipefail
-          # Written next to the addon: the publish step works inside dist/.
-          cat > dist/INSTALL.txt <<'EOF'
-          StreamAudioFilter — native audio core for Windows x64
-          =====================================================
+          cat > /tmp/NOTES.md <<EOF
+          ## Installation
 
-          What this file is
-          -----------------
-          streamaudiofilter.node is the compiled audio engine of the
-          StreamAudioFilter Vencord plugin. The plugin ships without it so that
-          the repository stays free of binaries; it is built by CI from the exact
-          commit this release points to (MSVC, node-gyp, C++17).
+          **Recommended:** download **StreamAudioFilter-Setup.exe**, quit Discord (tray icon → Quit), run it, choose your Discord, press **Install**, start Discord. The plugin is enabled by default; its panel opens from the button next to the microphone. Run the installer again to repair (for example after a Discord update removed Vencord) or to uninstall.
 
-          Where to put it
-          ---------------
-            %APPDATA%\Vencord\streamAudioFilter\native\streamaudiofilter.node
+          The installer needs no administrator rights and downloads nothing. An existing Vencord build is kept and restored on uninstall; Vencord's settings are never changed.
 
-          The folder is created by the plugin on first start. Alternatively run
-          scripts\build-native.ps1 from the repository: it needs Node.js and the
-          MSVC build tools and downloads nothing.
+          **Manual:** \`streamaudiofilter-vencord-dist.zip\` (Vencord with the plugin, see its README) plus \`saf-audio-host.exe\` into \`%APPDATA%\\Vencord\\streamAudioFilter\\native\\\`. All files must come from the same release.
 
-          If you have not installed the plugin itself yet
-          ---------------------------------------------
-          There are two ways, both in this release:
+          ## Checksums (SHA-256)
 
-            * streamaudiofilter-vencord-dist.zip — Vencord with the plugin
-              already built in. No Node.js, no compiler: unpack it, copy
-              Vencord-dist\* into %APPDATA%\Vencord\dist\, put this addon next
-              to it and restart Discord. See the README.txt inside the archive.
-            * scripts\install.ps1 from the repository — does the same by
-              building Vencord on your machine, which also keeps Vencord's own
-              updater working.
+          \`\`\`
+          $(cat dist/SHA256SUMS.txt)
+          \`\`\`
 
-          Requirements
-          ------------
-            * Windows 10 x64 build 19041 (2004) or newer, or Windows 11.
-              Process loopback is activated for real at runtime and the reported
-              HRESULT is what the plugin shows; versions below build 19041 have
-              no such API at all.
-            * Discord Desktop with Vencord injected into it. Vesktop and the
-              browser client are not supported.
-            * process-loopback-probe.exe (also in this release) is optional: it
-              performs the same per process capture activation on its own, without
-              Discord, and names the step that fails. It installs nothing and
-              writes no audio to disk; the only file it can create is a text log
-              you ask for with --report <file>. Usage: --playing, --spawn-tone
-              (the decisive check: a second process plays a 1 kHz tone and the
-              probe captures it), --process <name.exe>, --list; see
-              docs/PROBE.md.
-            * No administrator rights, no virtual audio device, no change to any
-              Windows or Discord audio setting. The filter only replaces the
-              audio track of the screen share.
-
-          Verify the download
-          -------------------
-            certutil -hashfile streamaudiofilter.node SHA256
-          and compare it with SHA256SUMS.txt. Both files come from this release.
+          Built from commit \`${GITHUB_SHA:0:7}\` after every test gate passed.
           EOF
-
-          cat > /tmp/RELEASE-NOTES.md <<EOF
-          Everything in this release was built by CI from the tag \`$TAG\`
-          (commit \`${GITHUB_SHA:0:7}\`): the native addon on a Windows runner, the prebuilt
-          Vencord distribution on Linux. Neither is uploaded by hand.
-
-          **\`streamaudiofilter-vencord-dist.zip\` — nothing to build.** Vencord with the
-          plugin already inside. Unpack it, copy \`Vencord-dist\\*\` into
-          \`%APPDATA%\\Vencord\\dist\\\`, put \`streamaudiofilter.node\` into
-          \`%APPDATA%\\Vencord\\streamAudioFilter\\native\\\`, restart Discord and enable the
-          plugin. Vencord's own updater is switched off in this build on purpose: it would
-          replace the whole directory and remove the plugin with it. Details are in the
-          archive's \`README.txt\`.
-
-          **\`streamaudiofilter.node\` — the addon only.** Use it with \`scripts\\install.ps1\`
-          from the repository (one command, keeps Vencord's updater working) or with your
-          own Vencord build: copy it next to the plugin as shown above, or let
-          \`scripts\\build-native.ps1\` build it from source.
-
-          **\`process-loopback-probe.exe\` — the diagnosis without Discord.** A console program that
-          performs the same process loopback activation the plugin uses (with the same agile completion
-          handler), prints every stage with its HRESULT, and measures what really arrives: packets,
-          frames, frames flagged silent, **non-zero samples**, the peak in dBFS, and whether the window
-          contains audio, only a noise floor, or silence. It installs nothing, changes no setting and
-          writes no audio anywhere; the only file it can create is the text log you ask for with
-          \`--report <file>\`:
-
-              process-loopback-probe.exe --playing                           (who is playing right now)
-              process-loopback-probe.exe --spawn-tone --seconds 8            (decisive: a second process plays the tone)
-              process-loopback-probe.exe --spawn-tone --system --seconds 8   (the same check on the device path)
-              process-loopback-probe.exe --process spotify.exe --seconds 8   (the real case)
-              process-loopback-probe.exe --spawn-tone --seconds 8 --report run.txt   (keep the log in a file)
-
-          Use it before reporting a capture problem: the \`[levels]\` lines say what a window contains —
-          audio, only a noise floor, or silence — with the peak in dBFS next to it, and a red stage names
-          the step and the HRESULT that refused it. Three results that do **not** prove anything, and are
-          called out in the output for that reason: a high frame count with zeros (a stream can be
-          perfectly paced and silent), a large count of non-zero samples (the noise floor of the capture
-          path is made of samples that are not exactly zero — 580972 of them at -90.2 dBFS in one real
-          run), and a missing tone that the probe played *itself* (with one process as both source and
-          observer the run cannot tell a capture that missed the content apart from a tone that never
-          reached the mix of the captured device — \`--spawn-tone\`, a second process, is the decisive
-          version). The tone search itself was fixed after the first real run reported a tone that was in
-          the audio as missing: it analysed interleaved stereo as if it were mono, which moves a 1 kHz
-          tone to half its frequency. Details in \`docs/PROBE.md\`, which also quotes the real runs on
-          Windows 10 19045.7725 — including the one that answered the question: \`--spawn-tone\` found its
-          1 kHz tone in the per process capture (magnitude 0.198461, peak 0.200000) and in the system
-          loopback (0.199965).
-
-          **Gates this build passed:** portable DSP and engine tests (\`g++\`), the TypeScript
-          rule and interceptor tests, the MSVC build, and the same portable tests compiled and
-          executed by \`cl.exe\` on Windows.
-
-          What it does: the plugin lets you choose which applications the viewers of a screen
-          share hear, by building its own mix of their audio and handing it to Discord as the
-          audio track of the share. Nobody else's audio is touched — the microphone, the voice
-          call, the local playback and every Windows or Discord audio setting stay exactly as
-          they were. If the filtering cannot run, the share is left without audio instead of
-          quietly sending everything (see the fail closed section of docs/LIMITATIONS.md).
-
-          The file is built from source by this run; the checksum below is the one
-          of the asset in this release.
-          EOF
-
-          # The notes are Markdown that a user reads. v0.1.4 shipped with an unbalanced code
-          # fence - one glued to the end of a sentence, the next glued to the front of the next
-          # paragraph - which made GitHub render the rest of the notes as a code block.
-          if grep -nE '^[[:space:]]*```[^`[:space:]]' /tmp/RELEASE-NOTES.md; then
-              echo "::error::the release notes have text glued to a code fence"
-              exit 1
-          fi
-          fences=$(grep -cE '^[[:space:]]*```[[:space:]]*$' /tmp/RELEASE-NOTES.md || true)
-          if [ $((fences % 2)) -ne 0 ]; then
-              echo "::error::the release notes have an unbalanced code fence ($fences)"
-              exit 1
-          fi
-          grep -q 'Everything in this release was built by CI' /tmp/RELEASE-NOTES.md || {
-              echo "::error::the release notes do not start with the CI statement"
-              exit 1
-          }
-
-          addon_hash=$(sha256sum dist/streamaudiofilter.node | cut -d' ' -f1)
-          bundle_hash=$(sha256sum dist/streamaudiofilter-vencord-dist.zip | cut -d' ' -f1)
-          probe_hash=$(sha256sum dist/process-loopback-probe.exe | cut -d' ' -f1)
-          printf '\n**SHA-256:**\n\n    streamaudiofilter.node              %s\n    streamaudiofilter-vencord-dist.zip %s\n    process-loopback-probe.exe         %s\n' \
-              "$addon_hash" "$bundle_hash" "$probe_hash" >> /tmp/RELEASE-NOTES.md
-          echo "::notice title=SHA-256 of streamaudiofilter.node::$addon_hash"
-          echo "::notice title=SHA-256 of streamaudiofilter-vencord-dist.zip::$bundle_hash"
-          echo "::notice title=SHA-256 of process-loopback-probe.exe::$probe_hash"
 
       - name: Publish
         run: |
-          set -uo pipefail
-          test -n "$TAG" || { echo "::error::the tag name is empty"; exit 1; }
-
-          status=0
+          set -euo pipefail
+          test -n "$TAG"
           cd dist
+          assets="StreamAudioFilter-Setup.exe streamaudiofilter-vencord-dist.zip saf-audio-host.exe process-loopback-probe.exe SHA256SUMS.txt"
           if gh release view "$TAG" >/dev/null 2>&1; then
-              gh release upload "$TAG" streamaudiofilter.node streamaudiofilter-vencord-dist.zip \
-                  process-loopback-probe.exe SHA256SUMS.txt INSTALL.txt --clobber >/tmp/publish.log 2>&1 || status=$?
+              gh release upload "$TAG" $assets --clobber
+              gh release edit "$TAG" --notes-file /tmp/NOTES.md
           else
-              gh release create "$TAG" \
-                  streamaudiofilter.node streamaudiofilter-vencord-dist.zip \
-                  process-loopback-probe.exe \
-                  SHA256SUMS.txt INSTALL.txt \
-                  --title "StreamAudioFilter $TAG" \
-                  --notes-file /tmp/RELEASE-NOTES.md \
-                  --verify-tag >/tmp/publish.log 2>&1 || status=$?
+              gh release create "$TAG" $assets --title "StreamAudioFilter $TAG" --notes-file /tmp/NOTES.md --verify-tag
           fi
-
-          if [ "$status" -eq 0 ]; then
-              # The notes are edited, not just attached, so that rerunning this
-              # job refreshes the checksum they quote.
-              gh release edit "$TAG" --notes-file /tmp/RELEASE-NOTES.md >/tmp/edit.log 2>&1 || {
-                  cat /tmp/edit.log
-                  echo "::error title=gh could not update the release notes::$(tr -d '\r' </tmp/edit.log | tr '\n' '|' | tail -c 600)"
-                  exit 1
-              }
-          fi
-
-          if [ "$status" -ne 0 ]; then
-              cat /tmp/publish.log
-              echo "::error title=gh could not publish the release (exit $status)::$(tr -d '\r' </tmp/publish.log | tr '\n' '|' | tail -c 1200)"
-              exit "$status"
-          fi
-
           gh release view "$TAG"

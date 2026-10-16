@@ -62,12 +62,17 @@ Write-Host "built: $(Join-Path $hostDir 'saf-audio-host.exe')"
 
 # --------------------------------------------------------------------- setup
 if ($Setup) {
-    if (-not $PayloadDir) { throw "-Setup needs -PayloadDir (a folder with dist\ and saf-audio-host.exe)" }
     $setupDir = Join-Path $native "build\setup"
     New-Item -ItemType Directory -Force $setupDir | Out-Null
     $payload = Join-Path $setupDir "payload.bin"
-    & node (Join-Path $root "scripts\pack-payload.mjs") $PayloadDir $payload
-    if ($LASTEXITCODE -ne 0) { throw "packing the payload failed" }
+    if ($PayloadDir) {
+        & node (Join-Path $root "scripts\pack-payload.mjs") $PayloadDir $payload
+        if ($LASTEXITCODE -ne 0) { throw "packing the payload failed" }
+    } else {
+        # No embedded data: this saf-setup.exe is used with --payload-dir only
+        # (scripts/install.ps1 does that with a Vencord build made from source).
+        [System.IO.File]::WriteAllText($payload, "SAFPAYLOAD1`n`n")
+    }
 
     $vcvars = Find-VsDevCmd
     $rc = Join-Path $setupDir "setup.rc"
