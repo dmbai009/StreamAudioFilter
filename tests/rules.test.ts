@@ -5,10 +5,9 @@
  */
 
 /**
- * StreamAudioFilter — per application audio filtering for screen shares.
- * Tests for the rule engine: the two modes, live changes, persistence and the
- * order of the application list. No Vencord and no Discord is needed —
- * apps/rules.ts is pure by design.
+ * StreamAudioFilter — tests for the rule engine: switch semantics, both
+ * modes, persistence, migration and the application list. apps/rules.ts is
+ * pure, so neither Vencord nor Discord is needed.
  *
  * Run:  npx tsx tests/rules.test.ts
  */
@@ -16,200 +15,132 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import {
-    buildAppList,
-    emptyState,
-    forgetApp,
-    normaliseState,
-    resetRules,
-    resolveTransmit,
-    seedDefaults,
-    setMode,
-    setTransmit,
-    toPayload
-} from "../apps/rules";
-import type { AppInfo, RulesState } from "../types";
-
-const DISCORD = "C:\\Users\\user\\AppData\\Local\\Discord\\app-1.0.9\\Discord.exe";
+import { buildAppList, emptyState, forgetApp, normaliseState, resetRules, resolveTransmit, RULES_VERSION, setMode, setTransmit, toPayload } from "../apps/rules";
+import type { AppInfo } from "../types";
 
 function app(partial: Partial<AppInfo> & { appKey: string; }): AppInfo {
     return {
-        appKey: partial.appKey,
-        displayName: partial.displayName ?? partial.appKey,
-        exeName: partial.exeName ?? "app.exe",
-        exePath: partial.exePath ?? "C:\\Apps\\app.exe",
-        playing: partial.playing ?? true,
-        capturable: partial.capturable ?? true,
-        ephemeral: partial.ephemeral ?? false,
-        transmitting: partial.transmitting ?? false,
-        captured: partial.captured ?? false,
-        peak: partial.peak ?? 0,
-        latencyMs: partial.latencyMs ?? -1,
-        format: partial.format ?? "",
-        error: partial.error ?? "",
-        notCapturableReason: partial.notCapturableReason ?? "",
+        displayName: partial.appKey,
+        exeName: "app.exe",
+        exePath: `C:\\Apps\\${partial.appKey}.exe`,
+        playing: true,
+        capturable: true,
+        ephemeral: false,
+        transmitting: false,
+        captured: false,
+        peak: 0,
+        latencyMs: -1,
+        format: "",
+        error: "",
+        notCapturableReason: "",
+        blockedReason: "",
+        coveredBy: "",
         starvedFrames: 0,
-        state: partial.state ?? "silent",
-        instances: partial.instances ?? 1
+        state: "silent",
+        instances: 1,
+        devices: [],
+        silentCapture: false,
+        ...partial
     };
 }
 
-test("an application started twice is one entry that says so", () => {
-    // Both instances share the app key (same executable): they must not become
-    // two entries, but the panel has to mention that two instances are summed.
-    const state = emptyState("allExcept");
-    const entries = buildAppList([
-        app({ appKey: "exe:game", displayName: "Game", instances: 2, captured: true, state: "transmitting" }),
-        app({ appKey: "exe:music", displayName: "Music", instances: 1 })
-    ], state);
-
-    assert.equal(entries.length, 2, "two applications, not three entries");
-    const game = entries.find(entry => entry.appKey === "exe:game")!;
-    assert.match(game.details, /2 instances/);
-    assert.doesNotMatch(entries.find(entry => entry.appKey === "exe:music")!.details, /instance/);
-});
-
-test("mode A transmits unknown applications, mode B does not", () => {
-    const all = emptyState("allExcept");
-    assert.equal(resolveTransmit(all, "exe:a"), true);
-
-    const only = emptyState("onlySelected");
-    assert.equal(resolveTransmit(only, "exe:a"), false);
-});
-
-test("an explicit choice wins over the mode and is never reset by switching modes", () => {
+test("the mode only decides apps without a rule", () => {
     let state = emptyState("allExcept");
-    state = setTransmit(state, app({ appKey: "exe:spotify", displayName: "Spotify", exePath: "C:\\Music\\Spotify.exe" }), false);
-    state = setTransmit(state, app({ appKey: "exe:game", displayName: "Game", exePath: "C:\\Games\\game.exe" }), true);
+    assert.equal(resolveTransmit(state, "exe:a"), true);
+    state = setTransmit(state, { appKey: "exe:a" }, false);
+    assert.equal(resolveTransmit(state, "exe:a"), false);
+    assert.equal(resolveTransmit(state, "exe:b"), true, "untouched app follows mode A");
 
-    assert.equal(resolveTransmit(state, "exe:spotify"), false);
-    assert.equal(resolveTransmit(state, "exe:game"), true);
-    assert.equal(resolveTransmit(state, "exe:telegram"), true);
-
-    // Switching to mode B must keep both explicit decisions.
     state = setMode(state, "onlySelected");
-    assert.equal(resolveTransmit(state, "exe:spotify"), false);
-    assert.equal(resolveTransmit(state, "exe:game"), true);
-    // ... and in mode B everything that was never touched stays muted.
-    assert.equal(resolveTransmit(state, "exe:telegram"), false);
+    assert.equal(resolveTransmit(state, "exe:a"), false, "a saved choice survives a mode change");
+    assert.equal(resolveTransmit(state, "exe:b"), false, "untouched app follows mode B");
 
-    state = setMode(state, "allExcept");
-    assert.equal(resolveTransmit(state, "exe:telegram"), true);
+    state = setTransmit(state, { appKey: "exe:b" }, true);
+    assert.equal(resolveTransmit(state, "exe:b"), true);
 });
 
-test("rules remember the name and path of an application that is already closed", () => {
-    let state = emptyState("allExcept");
-    state = setTransmit(state, app({ appKey: "exe:music", displayName: "Player", exePath: "C:\\Music\\player.exe" }), false);
+test("the switch value never flips meaning with the mode", () => {
+    const live = [app({ appKey: "exe:a" }), app({ appKey: "exe:b" })];
+    let state = setTransmit(emptyState("allExcept"), { appKey: "exe:a" }, true);
 
-    const entries = buildAppList([], state);
-    assert.equal(entries.length, 1);
-    assert.equal(entries[0].title, "Player");
-    assert.equal(entries[0].section, "closed");
-    assert.equal(entries[0].transmitting, false);
-    assert.match(entries[0].subtitle, /closed/i);
+    const a1 = buildAppList(live, state).find(e => e.appKey === "exe:a")!;
+    state = setMode(state, "onlySelected");
+    const a2 = buildAppList(live, state).find(e => e.appKey === "exe:a")!;
+    assert.equal(a1.allowed, true);
+    assert.equal(a2.allowed, true, "an explicitly allowed app stays allowed in both modes");
+
+    const b = buildAppList(live, state).find(e => e.appKey === "exe:b")!;
+    assert.equal(b.allowed, false);
+    assert.equal(b.byDefault, true, "an app without a rule is marked as following the default");
+    assert.equal(a2.byDefault, false);
 });
 
-test("the list separates applications with audio, silent ones and saved rules", () => {
-    const state = setTransmit(emptyState("allExcept"), app({ appKey: "exe:closed" }), false);
-    const live = [
-        app({ appKey: "exe:quiet", displayName: "Quiet", playing: false }),
-        app({ appKey: "exe:loud", displayName: "Loud", peak: 0.8, captured: true, state: "transmitting" }),
-        app({ appKey: "exe:soft", displayName: "Medium", peak: 0.2 })
-    ];
-
-    const entries = buildAppList(live, state, DISCORD);
-    const keys = entries.map(entry => entry.appKey);
-
-    assert.deepEqual(keys, ["exe:loud", "exe:soft", "exe:quiet", "exe:closed"]);
-    assert.equal(entries[0].section, "current");
-    assert.equal(entries[2].section, "idle");
-    assert.equal(entries[3].section, "closed");
+test("payload carries every saved choice and the capture gate", () => {
+    const state = setTransmit(setTransmit(emptyState("onlySelected"), { appKey: "exe:a" }, true), { appKey: "exe:b" }, false);
+    assert.deepEqual(toPayload(state, true), { mode: 1, overrides: { "exe:a": true, "exe:b": false }, active: true });
+    assert.equal(toPayload(state, false).active, false);
 });
 
-test("applications that can not be captured are marked and never shown as transmitted", () => {
-    const state = emptyState("allExcept");
-    const entries = buildAppList([
-        app({ appKey: "exe:protected", capturable: false, notCapturableReason: "a protected process", state: "unsupported" })
-    ], state);
-
-    assert.equal(entries[0].capturable, false);
-    assert.equal(entries[0].transmitting, false);
-    assert.match(entries[0].error, /protected/);
+test("reset and forget", () => {
+    let state = setTransmit(setTransmit(emptyState(), { appKey: "exe:a" }, false), { appKey: "exe:b" }, false);
+    state = forgetApp(state, "exe:a");
+    assert.deepEqual(Object.keys(state.rules), ["exe:b"]);
+    state = resetRules(state);
+    assert.deepEqual(state.rules, {});
 });
 
-test("the payload carries the mode, every explicit decision and the capture gate", () => {
-    let state = seedDefaults(emptyState("allExcept"), DISCORD);
-    state = setTransmit(state, app({ appKey: "exe:music" }), false);
-
-    const stopped = toPayload(state, false);
-    assert.equal(stopped.mode, 0);
-    assert.equal(stopped.active, false);
-    assert.equal(stopped.overrides["exe:music"], false);
-    assert.equal(stopped.overrides[`exe:${DISCORD.toLowerCase()}`], false);
-
-    const running = toPayload(setMode(state, "onlySelected"), true);
-    assert.equal(running.mode, 1);
-    assert.equal(running.active, true);
-});
-
-test("Discord itself is excluded by default so the voice channel is never sent back", () => {
-    const first = seedDefaults(emptyState("allExcept"), DISCORD);
-    const key = `exe:${DISCORD.toLowerCase()}`;
-    assert.equal(first.rules[key].transmit, false);
-
-    // Seeding twice must not undo a decision the user made in the meantime.
-    const changed = setTransmit(first, app({ appKey: key }), true);
-    const again = seedDefaults(changed, DISCORD);
-    assert.equal(again.rules[key].transmit, true);
-
-    // ... and without a known Discord path nothing is seeded at all.
-    assert.deepEqual(seedDefaults(emptyState("allExcept"), "").rules, {});
-});
-
-test("reset keeps the mode, forget removes a single application", () => {
-    let state = setMode(emptyState("allExcept"), "onlySelected");
-    state = setTransmit(state, app({ appKey: "exe:a" }), true);
-    state = setTransmit(state, app({ appKey: "exe:b" }), false);
-
-    const afterReset = resetRules(state);
-    assert.equal(afterReset.mode, "onlySelected");
-    assert.deepEqual(afterReset.rules, {});
-
-    const afterForget = forgetApp(state, "exe:a");
-    assert.equal(afterForget.rules["exe:a"], undefined);
-    assert.equal(afterForget.rules["exe:b"] !== undefined, true);
-});
-
-test("a broken or outdated store never breaks the plugin", () => {
-    const broken = [null, undefined, 42, "text", {}, { mode: "nonsense", rules: { a: 1, b: { transmit: "yes" } } }];
-
-    for (const raw of broken) {
-        const state: RulesState = normaliseState(raw as unknown);
-        assert.equal(state.mode, "allExcept");
-        assert.deepEqual(state.rules, {});
-    }
-
-    const valid = normaliseState({
+test("normalising drops garbage and migrates version 1", () => {
+    const raw = {
         mode: "onlySelected",
         version: 1,
-        rules: { "exe:a": { transmit: false, name: "A", exePath: "C:\\a.exe", lastSeen: 1 }, "exe:b": { transmit: true } }
-    });
-    assert.equal(valid.mode, "onlySelected");
-    assert.equal(valid.rules["exe:a"].name, "A");
-    assert.equal(valid.rules["exe:b"].transmit, true);
+        rules: {
+            "exe:c:\\users\\u\\appdata\\local\\discord\\app-1.0.9045\\discord.exe": { transmit: false, name: "Discord (voice call)" },
+            "exe:c:\\games\\game.exe": { transmit: true, name: "Game" },
+            "exe:broken": { transmit: "yes" },
+            "exe:null": null
+        }
+    };
+    const state = normaliseState(raw);
+    assert.equal(state.mode, "onlySelected");
+    assert.equal(state.version, RULES_VERSION);
+    assert.deepEqual(Object.keys(state.rules), ["exe:c:\\games\\game.exe"], "the seeded Discord rule of v1 is removed, broken rules are dropped");
+
+    const user = normaliseState({ version: 1, rules: { "exe:c:\\tools\\discord.exe": { transmit: false, name: "My Discord tool" } } });
+    assert.equal(Object.keys(user.rules).length, 1, "a rule the user made is never removed by the migration");
+
+    assert.deepEqual(normaliseState("nonsense"), emptyState());
 });
 
-test("different applications with the same display name stay separate", () => {
-    let state = emptyState("allExcept");
-    state = setTransmit(state, app({ appKey: "exe:first", displayName: "Chrome", exePath: "C:\\A\\chrome.exe" }), false);
+test("list sections, closed apps and non capturable apps", () => {
+    let state = setTransmit(emptyState(), { appKey: "exe:closed", displayName: "Closed app", exePath: "C:\\x\\closed.exe" }, false);
+    state = setTransmit(state, { appKey: "exe:uwp" }, true);
+    const live = [
+        app({ appKey: "exe:b", displayName: "Beta", playing: true }),
+        app({ appKey: "exe:a", displayName: "Alpha", playing: false }),
+        app({ appKey: "exe:uwp", displayName: "Store app", capturable: false, notCapturableReason: "protected" })
+    ];
+    const list = buildAppList(live, state);
+    assert.deepEqual(list.map(e => [e.appKey, e.section]), [
+        ["exe:b", "current"],
+        ["exe:uwp", "current"],
+        ["exe:a", "idle"],
+        ["exe:closed", "closed"]
+    ]);
+    assert.equal(list.find(e => e.appKey === "exe:uwp")!.allowed, false, "an app that can not be captured is never shown as allowed");
+    const closed = list.find(e => e.appKey === "exe:closed")!;
+    assert.equal(closed.title, "Closed app");
+    assert.equal(closed.exeName, "closed.exe");
+});
 
-    const entries = buildAppList([
-        app({ appKey: "exe:first", displayName: "Chrome", exePath: "C:\\A\\chrome.exe" }),
-        app({ appKey: "exe:second", displayName: "Chrome", exePath: "D:\\B\\chrome.exe" })
-    ], state);
-
-    const first = entries.find(entry => entry.appKey === "exe:first")!;
-    const second = entries.find(entry => entry.appKey === "exe:second")!;
-    assert.equal(first.transmitting, false);
-    assert.equal(second.transmitting, true);
+test("live state passes through to the list", () => {
+    const list = buildAppList([app({
+        appKey: "exe:a", captured: true, silentCapture: true, devices: ["Line 1 (Virtual Audio Cable)"],
+        state: "blocked", blockedReason: "Game runs inside", coveredBy: "", instances: 2
+    })], emptyState());
+    const [entry] = list;
+    assert.equal(entry.captured, true);
+    assert.equal(entry.silentCapture, true);
+    assert.deepEqual(entry.devices, ["Line 1 (Virtual Audio Cable)"]);
+    assert.equal(entry.blockedReason, "Game runs inside");
+    assert.equal(entry.instances, 2);
 });

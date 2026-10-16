@@ -5,31 +5,35 @@
  */
 
 /**
- *
  * StreamAudioFilter — per application audio filtering for screen shares.
  * Rule resolution. Deliberately pure (no imports, no Vencord, no DOM) so the
- * semantics of both filtering modes can be unit tested.
+ * semantics of both modes can be unit tested.
+ *
+ * The switch of an application always means the same thing: on = the viewers
+ * may hear it. The mode only decides the value for applications the user never
+ * touched; switching the mode never rewrites a saved choice.
  */
 
 import type { AppInfo, AppListEntry, AppRule, FilterMode, RuleSetPayload, RulesState } from "../types";
 
-export const RULES_VERSION = 1;
+/**
+ * 2: Discord itself is protected by the audio host (by process tree), so the
+ *    old seeded rule keyed by Discord's versioned executable path is removed.
+ */
+export const RULES_VERSION = 2;
 
 export function emptyState(mode: FilterMode = "allExcept"): RulesState {
     return { mode, rules: {}, version: RULES_VERSION };
 }
 
-/**
- * Resolves whether an application is transmitted.
- *
- * The single source of truth is the user's explicit choice per application; the
- * mode only decides what happens to applications that were never touched. That
- * is why switching modes never clears anything.
- */
 export function resolveTransmit(state: RulesState, appKey: string): boolean {
     const rule = state.rules[appKey];
     if (rule) return rule.transmit;
     return state.mode === "allExcept";
+}
+
+export function hasRule(state: RulesState, appKey: string): boolean {
+    return Object.prototype.hasOwnProperty.call(state.rules, appKey);
 }
 
 /** Records an explicit decision and remembers how to display the entry later. */
@@ -48,7 +52,7 @@ export function setMode(state: RulesState, mode: FilterMode): RulesState {
     return { ...state, mode };
 }
 
-/** Removes every explicit choice (the built in defaults are seeded again). */
+/** Removes every explicit choice. */
 export function resetRules(state: RulesState): RulesState {
     return { ...state, rules: {} };
 }
@@ -66,34 +70,9 @@ export function toPayload(state: RulesState, active: boolean): RuleSetPayload {
     return { mode: state.mode === "onlySelected" ? 1 : 0, overrides, active };
 }
 
-/**
- * Built in default exclusions.
- *
- * Discord's own voice chat is excluded by default in mode A: it is the one
- * application whose audio must not be sent back to the people producing it.
- * The decision is stored like any other rule, so the user can undo it and can
- * see why it exists.
- */
-export function seedDefaults(state: RulesState, discordExecutable: string, now = Date.now()): RulesState {
-    if (state.version >= RULES_VERSION && Object.keys(state.rules).length > 0) return state;
-    if (!discordExecutable) return { ...state, version: RULES_VERSION };
-
-    const key = `exe:${discordExecutable.replace(/\//g, "\\").toLowerCase()}`;
-    if (state.rules[key] && state.version >= RULES_VERSION) return { ...state, version: RULES_VERSION };
-
-    return {
-        ...state,
-        version: RULES_VERSION,
-        rules: {
-            ...state.rules,
-            [key]: {
-                transmit: false,
-                name: "Discord (voice call)",
-                exePath: discordExecutable,
-                lastSeen: now
-            }
-        }
-    };
+/** True for the rule version 1 seeded for Discord's (versioned) executable. */
+function isLegacyDiscordRule(key: string, rule: AppRule): boolean {
+    return rule.name === "Discord (voice call)" && /\\discord(ptb|canary|development)?\\app-[^\\]+\\discord(ptb|canary|development)?\.exe$/i.test(key);
 }
 
 /** Loads a possibly broken/old persisted state. */
@@ -103,103 +82,93 @@ export function normaliseState(raw: unknown, fallbackMode: FilterMode = "allExce
 
     const candidate = raw as Partial<RulesState>;
     if (candidate.mode === "allExcept" || candidate.mode === "onlySelected") state.mode = candidate.mode;
-    if (typeof candidate.version === "number") state.version = candidate.version;
+    const storedVersion = typeof candidate.version === "number" ? candidate.version : 0;
 
     if (candidate.rules && typeof candidate.rules === "object") {
         for (const [key, value] of Object.entries(candidate.rules)) {
             if (!value || typeof value !== "object") continue;
             const rule = value as Partial<AppRule>;
             if (typeof rule.transmit !== "boolean") continue;
-            state.rules[key] = {
+            const normalised: AppRule = {
                 transmit: rule.transmit,
                 name: typeof rule.name === "string" ? rule.name : undefined,
                 exePath: typeof rule.exePath === "string" ? rule.exePath : undefined,
                 lastSeen: typeof rule.lastSeen === "number" ? rule.lastSeen : undefined
             };
+            if (storedVersion < 2 && isLegacyDiscordRule(key, normalised)) continue;
+            state.rules[key] = normalised;
         }
     }
+    state.version = RULES_VERSION;
     return state;
 }
 
 /**
  * Merges the live application list with the saved rules.
  *
- * Sections (requirement: applications with audio first, saved rules for closed
- * applications separately):
  *   current — a session is active right now
  *   idle    — running, but not playing anything at the moment
  *   closed  — saved rule of an application that is not running
  */
-export function buildAppList(live: AppInfo[], state: RulesState, discordExecutable = ""): AppListEntry[] {
+export function buildAppList(live: AppInfo[], state: RulesState): AppListEntry[] {
     const entries: AppListEntry[] = [];
     const seen = new Set<string>();
 
     for (const app of live) {
         seen.add(app.appKey);
-        const transmitting = resolveTransmit(state, app.appKey);
-        const details: string[] = [];
-        if (app.exeName) details.push(app.exeName);
-        if (app.instances > 1) details.push(`${app.instances} instances`);
-        if (app.format) details.push(app.format);
-        if (app.captured && app.latencyMs >= 0) details.push(`latency ~${app.latencyMs} ms`);
-
         entries.push({
             appKey: app.appKey,
-            title: displayNameOf(app),
-            subtitle: subtitleOf(app),
+            title: app.displayName || app.exeName || app.appKey,
+            exeName: app.exeName,
             section: app.playing ? "current" : "idle",
-            transmitting: transmitting && app.capturable,
+            allowed: app.capturable && resolveTransmit(state, app.appKey),
+            byDefault: !hasRule(state, app.appKey),
             capturable: app.capturable,
             ephemeral: app.ephemeral,
             state: app.state,
+            captured: app.captured,
             peak: app.peak,
-            details: details.join(" · "),
-            error: app.error || app.notCapturableReason,
+            instances: app.instances,
+            devices: app.devices ?? [],
+            silentCapture: !!app.silentCapture,
+            format: app.format,
+            latencyMs: app.latencyMs,
+            error: app.error,
+            notCapturableReason: app.notCapturableReason,
+            blockedReason: app.blockedReason ?? "",
+            coveredBy: app.coveredBy ?? "",
             exePath: app.exePath
         });
     }
 
     for (const [key, rule] of Object.entries(state.rules)) {
         if (seen.has(key)) continue;
-        const isDiscord = discordExecutable && rule.exePath
-            && rule.exePath.replace(/\//g, "\\").toLowerCase() === discordExecutable.replace(/\//g, "\\").toLowerCase();
         entries.push({
             appKey: key,
-            title: rule.name || "Application",
-            subtitle: "Application closed",
+            title: rule.name || key,
+            exeName: rule.exePath ? rule.exePath.split(/[\\/]/).pop() ?? "" : "",
             section: "closed",
-            transmitting: rule.transmit,
+            allowed: rule.transmit,
+            byDefault: false,
             capturable: true,
             ephemeral: false,
             state: "closed",
+            captured: false,
             peak: 0,
-            details: isDiscord ? "excluded by default so that the voice call never ends up in the share" : "",
+            instances: 0,
+            devices: [],
+            silentCapture: false,
+            format: "",
+            latencyMs: -1,
             error: "",
+            notCapturableReason: "",
+            blockedReason: "",
+            coveredBy: "",
             exePath: rule.exePath || ""
         });
     }
 
     const weight = (entry: AppListEntry) => (entry.section === "current" ? 0 : entry.section === "idle" ? 1 : 2);
-    entries.sort((a, b) => {
-        const bySection = weight(a) - weight(b);
-        if (bySection !== 0) return bySection;
-        // Louder applications first inside the active section.
-        if (a.section === "current" && Math.abs(b.peak - a.peak) > 0.02) return b.peak - a.peak;
-        return a.title.localeCompare(b.title);
-    });
-
+    entries.sort((a, b) => weight(a) - weight(b) || a.title.localeCompare(b.title));
     return entries;
-}
-
-function displayNameOf(app: AppInfo): string {
-    return app.displayName || app.exeName || app.appKey;
-}
-
-function subtitleOf(app: AppInfo): string {
-    if (!app.capturable) return "cannot be filtered";
-    if (app.error) return "audio capture failed";
-    if (app.state === "excluded") return "excluded from the share";
-    if (!app.playing) return "not playing audio right now";
-    if (app.captured) return "sent to the viewers";
-    return "audio not captured";
 }
