@@ -1,3 +1,5 @@
+
+> **Historical (v0.1.x).** This document describes the audit of the first plugin generation (Web Audio track replacing `getDisplayMedia` audio). That approach could never reach Discord Desktop's native screen share capture; see [ARCHITECTURE.md](ARCHITECTURE.md) for the current design.
 # Remediation: stages, status and evidence
 
 This document tracks the work items of the audit that followed the first real test run on
