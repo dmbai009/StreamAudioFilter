@@ -467,7 +467,15 @@ class Store {
             stats: state.stats,
             apps: state.apps,
             problems: problemsOf(state).map(problem => `[${problem.level}] ${problem.text}`),
-            patch: state.patch
+            patch: state.patch,
+            runtime: {
+                inVoice: state.inVoice,
+                engineRunning: state.engineRunning,
+                renderPid: this.renderPid,
+                redirectActive: this.redirectActive,
+                panels: state.panels,
+                actionError: state.actionError
+            }
         };
     }
 }
