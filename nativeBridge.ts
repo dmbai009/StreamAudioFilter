@@ -52,6 +52,9 @@ export const Native = {
     stopEngine: (): Promise<StartResult> => native ? native.stopEngine() : Promise.resolve({ ok: true }),
     setRules: (rules: RuleSetPayload): Promise<StartResult> => native ? native.setRules(rules) : Promise.resolve(NOT_AVAILABLE),
     setOutput: (on: boolean): Promise<StartResult> => native ? native.setOutput(on) : Promise.resolve(NOT_AVAILABLE),
+    setMasterMuted: (muted: boolean): Promise<StartResult> => native ? native.setMasterMuted(muted) : Promise.resolve(NOT_AVAILABLE),
+    loadPreferences: () => native ? native.loadPreferences() : Promise.resolve({} as { rules?: unknown; position?: { x: number; y: number; }; reset?: boolean; }),
+    savePreferences: (key: "rules" | "position", value: unknown): Promise<void> => native ? native.savePreferences(key, value) : Promise.reject(new Error(NO_HOST.error)),
     refreshApps: (): Promise<StartResult> => native ? native.refreshApps() : Promise.resolve(NOT_AVAILABLE),
     async listApps(): Promise<AppInfo[]> {
         if (!native) return [];

@@ -13,7 +13,7 @@
 
 import type { ShareAudio } from "../types";
 
-export type IconKind = "on" | "warn" | "off";
+export type IconKind = "on" | "warn" | "off" | "muted";
 
 export function iconKindOf(audio: ShareAudio): IconKind {
     if (audio === "filtered") return "on";
@@ -42,6 +42,7 @@ export function Icon({ kind, size = 20, className }: { kind: IconKind; size?: nu
             {kind === "warn" && (
                 <circle cx="19.6" cy="5" r="3.6" fill="var(--status-warning)" stroke="var(--background-base-lowest)" strokeWidth="1.6" />
             )}
+            {kind === "muted" && <path d="M3 3 21 21" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />}
         </svg>
     );
 }

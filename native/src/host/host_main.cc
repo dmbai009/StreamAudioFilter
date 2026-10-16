@@ -253,6 +253,13 @@ public:
             object.boolean("ok", engine_ != nullptr);
             if (!engine_) object.string("error", "the engine is not running");
             object.number("overrides", static_cast<long long>(rules.overrides.size()));
+        } else if (command == "mute") {
+            JsonObject object(json);
+            const bool valid = args.size() == 3 && (args[2] == "0" || args[2] == "1");
+            object.boolean("ok", valid && engine_ != nullptr);
+            if (!engine_) object.string("error", "the engine is not running");
+            else if (!valid) object.string("error", "mute expects 0 or 1");
+            else engine_->setMasterMuted(args[2] == "1");
         } else if (command == "apps") {
             JsonObject object(json);
             object.boolean("ok", true);
@@ -261,6 +268,7 @@ public:
             JsonObject object(json);
             object.boolean("ok", true);
             object.raw("engine", engine_ ? engineJson(engine_->stats()) : std::string("null"));
+            object.boolean("masterMuted", engine_ && engine_->masterMuted());
             OutputStatus status;
             status.kind = outputKind_ == OutputKind::Null ? "null" : "wasapi";
             status.discordAttached = discordHookLoaded();

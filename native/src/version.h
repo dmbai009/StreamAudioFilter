@@ -9,5 +9,5 @@
 
 #pragma once
 
-#define SAF_VERSION "0.2.0"
-#define SAF_PROTOCOL 1
+#define SAF_VERSION "0.3.0"
+#define SAF_PROTOCOL 2

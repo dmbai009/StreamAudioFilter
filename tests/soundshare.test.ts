@@ -103,7 +103,7 @@ test("the patch regexes match the Discord code they were written against", () =>
     const excerpt = "o=i.startsWith(`${eq.fS.ACTIVITY}:`),d=o?null:eG.A.getPidFromDesktopSource(i);p.isPlatformEmbedded&&!o&&({soundshareId:e,soundshareSession:n}=nD(d,r)),s!==tl&&(null!=a&&tt.setGoLiveSource(null,tl),tl=s)"
         + ";getExperimentalSoundshare(){let e=t7().experimentalSoundshare2;return this.supportsExperimentalSoundshare()}";
     // Vencord's \i: an identifier.
-    const source = readFileSync(join(__dirname, "..", "index.tsx"), "utf8");
+    const source = readFileSync(join(__dirname, "..", "index.tsx"), "utf8").replace(/\r\n/g, "\n");
     const patterns = [...source.matchAll(/match: (\/.*\/),?\n/g)].map(m => m[1]).slice(0, 2);
     assert.equal(patterns.length, 2);
     for (const literal of patterns) {

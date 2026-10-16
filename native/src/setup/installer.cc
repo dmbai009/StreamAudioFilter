@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "installer.h"
+#include "settings_json.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -319,6 +320,15 @@ bool loadPayloadFromDirectory(const std::wstring& directory, Payload& payload, s
         error = "the payload folder has no dist\\ folder";
         return false;
     }
+    if (fs::is_directory(root / L"clean-dist", ec)) {
+        for (const auto& entry : fs::recursive_directory_iterator(root / L"clean-dist", ec)) {
+            if (!entry.is_regular_file() || entry.path().extension() == L".map") continue;
+            std::string data;
+            if (!readFile(entry.path(), data)) { error = "could not read clean Vencord payload"; return false; }
+            payload.files[toUtf8(fs::relative(entry.path(), root).generic_wstring())] = data;
+        }
+        if (ec) { error = "could not read clean Vencord payload"; return false; }
+    }
     const auto manifest = parseKeyValues(payload.files["saf-version.txt"]);
     payload.version = manifest.count("version") ? manifest.at("version") : "";
     payload.protocol = manifest.count("protocol") ? manifest.at("protocol") : "";
@@ -339,10 +349,18 @@ Status readStatus(const Paths& paths) {
         const auto values = parseKeyValues(marker);
         if (values.count("version")) status.installedVersion = values.at("version");
     }
+    std::string record;
+    const bool recorded = readFile(safDir(paths) / kStateFile, record);
+    if (status.installedVersion.empty() && recorded) status.installedVersion = parseKeyValues(record)["version"];
     status.hostPresent = fs::exists(safDir(paths) / L"native" / L"saf-audio-host.exe", ec)
         || (!status.installedVersion.empty() && fs::exists(safDir(paths) / L"native" / toWide(status.installedVersion) / L"saf-audio-host.exe", ec));
     status.foreignBackup = fs::exists(vencordDir(paths) / L"dist.saf-backup", ec);
+    status.installed = status.ourVencord || recorded || fs::exists(safDir(paths) / L"native", ec);
     return status;
+}
+
+bool newerVersion(const std::string& available, const std::string& installed) {
+    return versionLess(toWide(installed), toWide(available));
 }
 
 // --------------------------------------------------------------------- install
@@ -358,15 +376,20 @@ Result install(const Paths& paths, const DiscordInstall& discord, const Payload&
     };
 
     // 1. A complete payload from one release.
-    for (const char* required : { "dist/patcher.js", "dist/renderer.js", "dist/preload.js", "saf-audio-host.exe", "saf-version.txt" }) {
+    for (const char* required : { "dist/patcher.js", "dist/renderer.js", "dist/preload.js", "clean-dist/patcher.js", "clean-dist/renderer.js", "clean-dist/preload.js", "saf-audio-host.exe", "saf-version.txt" }) {
         if (!payload.files.count(required)) return fail(std::string("the installation data is incomplete: ") + required);
     }
     if (payload.version.empty()) return fail("the installation data has no version");
+    if (payload.files.at("clean-dist/renderer.js").find("forceHookSoundshare") != std::string::npos) return fail("the clean Vencord payload contains the plugin");
+    if (payload.version.find_first_not_of("0123456789.") != std::string::npos) return fail("invalid payload version");
+    const Status installed = readStatus(paths);
+    if (installed.installed && newerVersion(installed.installedVersion, payload.version)) return fail("a newer version is installed; downgrading is refused");
     if (payload.files.at("dist/renderer.js").find("\"" + payload.version + "\"") == std::string::npos
         || payload.files.at("dist/renderer.js").find("forceHookSoundshare") == std::string::npos) {
         return fail("the Vencord build in the installation data does not contain StreamAudioFilter " + payload.version);
     }
-    if (processRunningUnder(discord.root)) {
+    const auto allDiscords = findDiscordInstalls(paths);
+    if (processRunningUnder(discord.root) || std::any_of(allDiscords.begin(), allDiscords.end(), [](const auto& d) { return d.running; })) {
         return fail("Discord is running. Quit it completely (tray icon -> Quit Discord) and try again.");
     }
     log("installing StreamAudioFilter " + payload.version + " (Vencord " + payload.vencord + ") for " + toUtf8(discord.name) + " " + toUtf8(discord.version));
@@ -393,12 +416,12 @@ Result install(const Paths& paths, const DiscordInstall& discord, const Payload&
 
     // 2. Stage the new files next to the old ones.
     fs::remove_all(staged, ec);
+    journal.add([staged] { std::error_code e; fs::remove_all(staged, e); });
     for (const auto& [path, data] : payload.files) {
         if (path.rfind("dist/", 0) != 0) continue;
         if (!writeFile(staged / toWide(path.substr(5)), data)) return fail("could not write " + path);
     }
     if (!writeFile(staged / L"saf-version.txt", payload.files.at("saf-version.txt"))) return fail("could not write the version marker");
-    journal.add([staged] { std::error_code e; fs::remove_all(staged, e); });
 
     if (!writeFile(hostNew, payload.files.at("saf-audio-host.exe"))) return fail("could not write saf-audio-host.exe");
     journal.add([hostNew] { std::error_code e; fs::remove(hostNew, e); });
@@ -422,7 +445,9 @@ Result install(const Paths& paths, const DiscordInstall& discord, const Payload&
         } else {
             if (fs::exists(backup, ec)) {
                 // An older backup from an earlier installation: keep it under a dated name.
-                fs::rename(backup, vencord / toWide("dist.saf-backup-" + timestamp()), ec);
+                const auto archived = vencord / toWide("dist.saf-backup-" + timestamp());
+                if (!moveTo(backup, archived, error)) return fail(error);
+                journal.add([backup, archived] { std::error_code e; fs::rename(archived, backup, e); });
             }
             if (!moveTo(dist, backup, error)) return fail(error);
             journal.add([dist, backup] { std::error_code e; fs::remove_all(dist, e); fs::rename(backup, dist, e); });
@@ -443,13 +468,6 @@ Result install(const Paths& paths, const DiscordInstall& discord, const Payload&
     }
     if (!moveTo(hostNew, hostExe, error)) return fail(error);
     journal.add([hostExe, hostNew] { std::error_code e; fs::rename(hostExe, hostNew, e); });
-    // Older versions: the addon of 0.1.x and hosts of other versions (a host
-    // that is still running stays until the next installation).
-    fs::remove(nativeRoot / L"streamaudiofilter.node", ec);
-    fs::remove(nativeRoot / L"saf-audio-host.exe", ec);
-    for (const auto& entry : fs::directory_iterator(nativeRoot, ec)) {
-        if (entry.is_directory() && entry.path().filename() != nativeDir.filename()) fs::remove_all(entry.path(), ec);
-    }
 
     // 7. Vencord's loader in Discord.
     const fs::path appAsar = resources / L"app.asar";
@@ -486,9 +504,32 @@ Result install(const Paths& paths, const DiscordInstall& discord, const Payload&
           << "discordAppDir=" << toUtf8(discord.appDir) << "\n"
           << "injectedByUs=" << (injectedByUs ? 1 : 0) << "\n"
           << "foreignBackup=" << (foreignBackup ? 1 : 0) << "\n";
-    if (!writeFile(safDir(paths) / kStateFile, state.str())) return fail("could not write the installation record");
+    const auto record = safDir(paths) / kStateFile;
+    std::string oldRecord;
+    const bool hadRecord = readFile(record, oldRecord);
+    journal.add([record, oldRecord, hadRecord] { if (hadRecord) writeFile(record, oldRecord); else { std::error_code e; fs::remove(record, e); } });
+    if (!writeFile(record, state.str())) return fail("could not write the installation record");
 
+    // Keep a plain Vencord build for removal when no original build exists.
+    const fs::path clean = safDir(paths) / L"clean-dist";
+    const fs::path cleanOld = safDir(paths) / L"clean-dist.previous";
+    if (payload.files.count("clean-dist/patcher.js")) {
+        if (fs::exists(cleanOld, ec)) return fail("unfinished clean Vencord backup; finish recovery before installing");
+        if (fs::exists(clean, ec)) {
+            if (!moveTo(clean, cleanOld, error)) return fail(error);
+            journal.add([clean, cleanOld] { std::error_code e; fs::remove_all(clean, e); fs::rename(cleanOld, clean, e); });
+        } else journal.add([clean] { std::error_code e; fs::remove_all(clean, e); });
+        for (const auto& [path, data] : payload.files) {
+            if (path.rfind("clean-dist/", 0) == 0 && !writeFile(clean / toWide(path.substr(11)), data)) return fail("could not write clean Vencord build");
+        }
+    }
     journal.commit();
+    fs::remove_all(cleanOld, ec);
+    fs::remove(nativeRoot / L"streamaudiofilter.node", ec);
+    fs::remove(nativeRoot / L"saf-audio-host.exe", ec);
+    for (const auto& entry : fs::directory_iterator(nativeRoot, ec)) {
+        if (entry.is_directory() && entry.path().filename() != nativeDir.filename()) fs::remove_all(entry.path(), ec);
+    }
     fs::remove_all(previous, ec);
     fs::remove(hostOld, ec);
     log("done. Start Discord; StreamAudioFilter is enabled in Settings -> Vencord -> Plugins.");
@@ -498,76 +539,79 @@ Result install(const Paths& paths, const DiscordInstall& discord, const Payload&
 
 // ------------------------------------------------------------------- uninstall
 
-Result uninstall(const Paths& paths, const std::vector<DiscordInstall>& discords, const Log& log) {
+Result uninstall(const Paths& paths, const std::vector<DiscordInstall>& discords, const Log& log, bool keepSettings) {
     Result result;
+    Journal journal;
+    auto fail = [&](const std::string& error) {
+        log("ERROR: " + error); journal.rollback(log); result.error = error; return result;
+    };
+    for (const auto& discord : discords) {
+        if (processRunningUnder(discord.root)) return fail("Discord is running. Quit it completely (tray icon -> Quit Discord) and try again.");
+    }
+    const fs::path vencord = vencordDir(paths), saf = safDir(paths);
+    const fs::path dist = vencord / L"dist", backup = vencord / L"dist.saf-backup";
+    const fs::path retired = vencord / L"dist.saf-removing", retiredSaf = vencord / L"streamAudioFilter.removing";
     std::error_code ec;
-    std::string text;
-    readFile(safDir(paths) / kStateFile, text);
-    const auto state = parseKeyValues(text);
-    const bool injectedByUs = state.count("injectedByUs") && state.at("injectedByUs") == "1";
-    const fs::path vencord = vencordDir(paths);
-    const fs::path dist = vencord / L"dist";
-    const fs::path backup = vencord / L"dist.saf-backup";
-    const fs::path patcher = dist / L"patcher.js";
+    std::string error;
+    if (fs::exists(retired, ec) || fs::exists(retiredSaf, ec)) return fail("an unfinished removal needs recovery; no files were changed");
+    const bool ours = fs::exists(dist / L"saf-version.txt", ec);
+    const bool hasBackup = fs::is_directory(backup, ec);
+    const fs::path clean = saf / L"clean-dist";
+    const bool hasClean = fs::exists(clean / L"patcher.js", ec) && fs::exists(clean / L"renderer.js", ec) && fs::exists(clean / L"preload.js", ec);
+    // Never replace a Vencord build the user installed after ours.
+    if (ours && !hasBackup && !hasClean) return fail("the original Vencord backup is unavailable. Reinstall using the latest StreamAudioFilter installer, then remove it again. Nothing was removed.");
 
-    for (const auto& discord : discords) {
-        if (processRunningUnder(discord.root)) {
-            result.error = "Discord is running. Quit it completely (tray icon -> Quit Discord) and try again.";
-            log("ERROR: " + result.error);
-            return result;
-        }
-    }
-
-    const bool restoreForeign = fs::exists(backup, ec);
-    if (!fs::exists(dist / L"saf-version.txt", ec) && !restoreForeign) {
-        log("StreamAudioFilter's Vencord build is not installed; removing the audio host only");
-    }
-
-    // 1. Discord: remove the loader only if this installer added it and no
-    //    other Vencord build will need it.
-    for (const auto& discord : discords) {
-        const fs::path resources = fs::path(discord.appDir) / L"resources";
-        const fs::path appAsar = resources / L"app.asar";
-        const fs::path original = resources / L"_app.asar";
-        if (injectedByUs && !restoreForeign && fs::exists(original, ec) && isLoaderFor(appAsar, patcher)) {
-            fs::remove(appAsar, ec);
-            fs::rename(original, appAsar, ec);
-            if (ec) {
-                result.error = "could not restore Discord's app.asar: " + ec.message();
-                log("ERROR: " + result.error);
-                return result;
+    // Validate every shared settings file before modifying any files.
+    std::vector<std::pair<fs::path, std::string>> settings;
+    if (!keepSettings) {
+        try {
+            for (const auto* name : {L"settings.json", L"native-settings.json"}) {
+                const fs::path file = vencord / L"settings" / name;
+                std::string text;
+                if (fs::exists(file, ec)) {
+                    if (!readFile(file, text)) return fail("could not read Vencord settings");
+                    settings.emplace_back(file, SettingsJson(text).withoutPlugin());
+                }
             }
-            log("Vencord's loader was removed from " + toUtf8(discord.name) + " " + toUtf8(discord.version));
-        }
+        } catch (const std::exception& e) { return fail(std::string("settings were not changed: ") + e.what()); }
     }
+    if (ours) {
+        if (!moveTo(dist, retired, error)) return fail(error);
+        journal.add([dist, retired] { std::error_code e; fs::rename(retired, dist, e); });
+        const fs::path replacement = hasBackup ? backup : clean;
+        if (!moveTo(replacement, dist, error)) return fail(error);
+        journal.add([dist, replacement] { std::error_code e; fs::rename(dist, replacement, e); });
+        log(hasBackup ? "the original Vencord build was restored" : "plain Vencord was restored; only StreamAudioFilter was removed");
+    } else log("the current Vencord build is not owned by StreamAudioFilter and was left unchanged");
 
-    // 2. Vencord's build.
-    if (restoreForeign) {
-        fs::remove_all(dist, ec);
-        fs::rename(backup, dist, ec);
-        if (ec) {
-            result.error = "could not restore the previous Vencord build: " + ec.message();
-            log("ERROR: " + result.error);
-            return result;
-        }
-        log("the Vencord build that was there before StreamAudioFilter was restored");
-    } else if (fs::exists(dist / L"saf-version.txt", ec)) {
-        if (injectedByUs) {
-            fs::remove_all(dist, ec);
-            log("the Vencord build installed by StreamAudioFilter was removed");
-        } else {
-            // Vencord was installed before, but its build is not available any
-            // more: removing ours would leave Discord with a loader that loads
-            // nothing. It stays; Vencord's own installer can replace it.
-            log("the Vencord build stays (Vencord was installed before StreamAudioFilter, its old build is not available). "
-                "Run Vencord's installer (Repair) to get the official build; until then StreamAudioFilter stays inactive without its audio host.");
-        }
+    // Quarantine only this plugin's directory; no other plugins or Discord
+    // injection files need changing because Vencord remains installed.
+    if (fs::exists(saf, ec)) {
+        if (!moveTo(saf, retiredSaf, error)) return fail(error);
+        journal.add([saf, retiredSaf] { std::error_code e; fs::remove_all(saf, e); fs::rename(retiredSaf, saf, e); });
+    } else journal.add([saf] { std::error_code e; fs::remove_all(saf, e); });
+    std::string preferences;
+    const bool saved = keepSettings && readFile(retiredSaf / L"preferences.json", preferences);
+    if (saved) {
+        if (!writeFile(saf / L"preferences.json", preferences)) return fail("could not preserve plugin preferences");
+    } else if (!keepSettings) {
+        // Legacy IndexedDB belongs to Discord and other plugins. Never erase
+        // it. This tombstone prevents any old rules being imported again;
+        // the plugin deletes its legacy key at its next start.
+        if (!writeFile(saf / L"preferences.json", "{\"reset\":true}")) return fail("could not record preference reset");
     }
-
-    // 3. The audio host and the record. Vencord's settings (and the rules) stay.
-    fs::remove_all(safDir(paths) / L"native", ec);
-    fs::remove(safDir(paths) / kStateFile, ec);
-    log("the audio host was removed. Vencord's settings were not changed.");
+    for (const auto& [file, replacement] : settings) {
+        std::string original;
+        if (!readFile(file, original)) return fail("could not read Vencord settings");
+        journal.add([file, original] { writeFile(file, original); });
+        if (!writeFile(file, replacement)) return fail("could not update Vencord settings");
+    }
+    journal.commit();
+    fs::remove_all(retired, ec);
+    if (ec) { result.error = "plugin was removed but old bundle cleanup failed: " + ec.message(); log("ERROR: " + result.error); return result; }
+    fs::remove_all(retiredSaf, ec);
+    if (ec) { result.error = "plugin was removed but old host cleanup failed: " + ec.message(); log("ERROR: " + result.error); return result; }
+    log(keepSettings ? "plugin removed; settings preserved. Restart Discord." : "plugin files and settings removed. Legacy Discord database entries, if any, are cleared on the plugin's next start. Restart Discord.");
     result.ok = true;
     return result;
 }

@@ -65,6 +65,9 @@ jobs:
       - name: Share audio decision tests (fail closed, Discord patch regexes)
         run: npx --yes tsx tests/soundshare.test.ts
 
+      - name: Audio host replacement regression
+        run: node --test tests/native-client.test.mjs tests/preferences.test.mjs
+
       - name: Vencord ${{ env.VENCORD_REF }}
         run: |
           git clone --depth 1 --branch "$VENCORD_REF" https://github.com/Vencord/Vencord "$RUNNER_TEMP/vencord"
@@ -75,6 +78,20 @@ jobs:
 
       - name: tsc + eslint
         run: VENCORD_DIR="$RUNNER_TEMP/vencord" bash dev/typecheck.sh
+
+      - name: Panel visual and interaction tests
+        run: |
+          npm install --prefix "$RUNNER_TEMP/ui-tools" --no-save react@19.1.0 react-dom@19.1.0 playwright@1.62.1
+          node "$RUNNER_TEMP/ui-tools/node_modules/playwright/cli.js" install --with-deps chromium
+          SAF_TOOLCHAIN="$RUNNER_TEMP/vencord" SAF_UI_TOOLS="$RUNNER_TEMP/ui-tools" node dev/visual.test.mjs
+
+      - name: Panel screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: panel-screenshots
+          path: native/build/visual/*.png
+          if-no-files-found: ignore
 
   # Windows: the real WASAPI build, the same portable tests compiled by MSVC,
   # the host and the installer tested on Windows, and the diagnostic probe.
@@ -128,8 +145,11 @@ jobs:
           Set-Content (Join-Path $payload "dist\patcher.js") "// test"
           Set-Content (Join-Path $payload "dist\preload.js") "// test"
           Set-Content (Join-Path $payload "dist\renderer.js") "const v=`"$version`";forceHookSoundshare();"
+          New-Item -ItemType Directory -Force (Join-Path $payload "clean-dist") | Out-Null
+          foreach ($name in @('patcher.js', 'renderer.js', 'preload.js')) { Set-Content (Join-Path $payload "clean-dist\$name") '// plain Vencord' }
           Copy-Item native\build\host\saf-audio-host.exe $payload
-          Set-Content (Join-Path $payload "saf-version.txt") "version=$version`nprotocol=1`nvencord=test"
+          $protocol = (Select-String -Path version.ts -Pattern 'PROTOCOL_VERSION = (\d+)').Matches[0].Groups[1].Value
+          Set-Content (Join-Path $payload "saf-version.txt") "version=$version`nprotocol=$protocol`nvencord=test"
           ./scripts/build-host.ps1 -Setup -PayloadDir $payload
 
       - name: Installer tests (fake user profile)

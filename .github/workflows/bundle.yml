@@ -117,6 +117,13 @@ jobs:
           echo "packages: $(ls node_modules | wc -l), size: $(du -sh node_modules | cut -f1)"
           SCRIPT
 
+      - name: Build plain Vencord for safe plugin removal
+        run: |
+          cd "$VENCORD_DIR"
+          pnpm build --standalone
+          mkdir -p "$RUNNER_TEMP/clean-dist"
+          cp dist/* "$RUNNER_TEMP/clean-dist/"
+
       - name: Place the plugin into src/userplugins
         run: |
           bash .github/ci/step.sh "Place the plugin" <<'SCRIPT'
@@ -176,6 +183,8 @@ jobs:
           rm -rf "$bundle"
           mkdir -p "$bundle/Vencord-dist"
           cp "$VENCORD_DIR"/dist/* "$bundle/Vencord-dist/"
+          mkdir -p "$bundle/Vencord-clean"
+          cp "$RUNNER_TEMP"/clean-dist/* "$bundle/Vencord-clean/"
           # Source maps are a third of the download and useless to a user.
           find "$bundle" -name '*.map' -delete
 

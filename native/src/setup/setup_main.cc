@@ -81,6 +81,7 @@ int runCli(const std::vector<std::wstring>& args) {
 
     Paths paths = defaultPaths();
     std::wstring command, discordRoot, payloadDir;
+    bool keepSettings = true;
     for (size_t i = 0; i < args.size(); i++) {
         const std::wstring& a = args[i];
         auto next = [&]() { return i + 1 < args.size() ? args[++i] : std::wstring(); };
@@ -88,6 +89,7 @@ int runCli(const std::vector<std::wstring>& args) {
         else if (a == L"--localappdata") paths.localAppData = next();
         else if (a == L"--discord") discordRoot = next();
         else if (a == L"--payload-dir") payloadDir = next();
+        else if (a == L"--remove-settings") keepSettings = false;
         else command = a;
     }
     const Log log = [](const std::string& line) { print(line + "\n"); };
@@ -106,11 +108,12 @@ int runCli(const std::vector<std::wstring>& args) {
     if (command == L"--status") {
         const Status status = readStatus(paths);
         print("vencord=" + std::to_string(status.vencordPresent) + " ours=" + std::to_string(status.ourVencord) + " version=" + status.installedVersion
-            + " host=" + std::to_string(status.hostPresent) + " foreignBackup=" + std::to_string(status.foreignBackup) + "\n");
+            + " host=" + std::to_string(status.hostPresent) + " foreignBackup=" + std::to_string(status.foreignBackup)
+            + " installed=" + std::to_string(status.installed) + " available=" + SAF_VERSION + "\n");
         return 0;
     }
-    if (command == L"--uninstall") return uninstall(paths, discords, log).ok ? 0 : 1;
-    if (command == L"--install") {
+    if (command == L"--uninstall") return uninstall(paths, discords, log, keepSettings).ok ? 0 : 1;
+    if (command == L"--install" || command == L"--update" || command == L"--reinstall") {
         Payload payload;
         std::string error;
         const bool loaded = payloadDir.empty() ? loadEmbeddedPayload(payload, error) : loadPayloadFromDirectory(payloadDir, payload, error);
@@ -118,6 +121,10 @@ int runCli(const std::vector<std::wstring>& args) {
             log("ERROR: " + error);
             return 1;
         }
+        const Status status = readStatus(paths);
+        if (command != L"--install" && !status.installed) { log("ERROR: the plugin is not installed"); return 1; }
+        if (command == L"--update" && !newerVersion(payload.version, status.installedVersion)) { log("ERROR: no newer version is available in this installer"); return 1; }
+        if (command == L"--reinstall" && payload.version != status.installedVersion) { log("ERROR: reinstall requires the same version; use Update for a newer version"); return 1; }
         const DiscordInstall* target = nullptr;
         for (const auto& d : discords) {
             if (discordRoot.empty() || _wcsicmp(d.root.c_str(), discordRoot.c_str()) == 0) {
@@ -131,16 +138,16 @@ int runCli(const std::vector<std::wstring>& args) {
         }
         return install(paths, *target, payload, log).ok ? 0 : 1;
     }
-    print("usage: saf-setup.exe --list | --status | --install [--discord <folder>] [--payload-dir <dir>] | --uninstall | --version\n");
+    print("usage: saf-setup.exe --list | --status | --install | --update | --reinstall [--discord <folder>] [--payload-dir <dir>] | --uninstall [--remove-settings] | --version\n");
     return 2;
 }
 
 // ------------------------------------------------------------------------ window
 
-enum : int { kCombo = 100, kInstall, kUninstall, kClose, kLog, kInfo };
+enum : int { kCombo = 100, kInstall, kUninstall, kClose, kLog, kInfo, kReinstall, kKeepSettings };
 
 struct Ui {
-    HWND window = nullptr, combo = nullptr, log = nullptr, info = nullptr, install = nullptr, uninstall = nullptr;
+    HWND window = nullptr, combo = nullptr, log = nullptr, info = nullptr, install = nullptr, uninstall = nullptr, reinstall = nullptr, keepSettings = nullptr;
     HFONT font = nullptr, bold = nullptr;
     Paths paths = defaultPaths();
     std::vector<DiscordInstall> discords;
@@ -159,33 +166,39 @@ void appendLog(const std::string& line) {
 }
 
 void refresh() {
+    std::wstring selected;
+    const auto index = SendMessageW(ui.combo, CB_GETCURSEL, 0, 0);
+    if (index >= 0 && index < static_cast<LRESULT>(ui.discords.size())) selected = ui.discords[static_cast<size_t>(index)].root;
     ui.discords = findDiscordInstalls(ui.paths);
     SendMessageW(ui.combo, CB_RESETCONTENT, 0, 0);
     for (const auto& d : ui.discords) SendMessageW(ui.combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(describe(d).c_str()));
-    if (!ui.discords.empty()) SendMessageW(ui.combo, CB_SETCURSEL, 0, 0);
+    if (!ui.discords.empty()) {
+        size_t chosen = 0;
+        for (size_t i = 0; i < ui.discords.size(); i++) if (ui.discords[i].root == selected) chosen = i;
+        SendMessageW(ui.combo, CB_SETCURSEL, chosen, 0);
+    }
 
     const Status status = readStatus(ui.paths);
-    std::wstring info;
-    if (status.ourVencord) {
-        info = tr(L"Installed: StreamAudioFilter ", L"Установлено: StreamAudioFilter ") + toWide(status.installedVersion)
-            + tr(L". Install again to repair or update.", L". Повторная установка исправит или обновит.");
-    } else if (status.vencordPresent) {
-        info = tr(L"Vencord is installed. Its build will be replaced by Vencord + StreamAudioFilter; your Vencord settings and plugins' settings stay. The current build is kept and restored on uninstall.",
-                  L"Vencord установлен. Его сборка будет заменена на Vencord + StreamAudioFilter; настройки Vencord и плагинов сохранятся. Текущая сборка сохраняется и вернётся при удалении.");
-    } else {
-        info = tr(L"Vencord is not installed: it will be installed together with StreamAudioFilter.",
-                  L"Vencord не установлен: он будет установлен вместе со StreamAudioFilter.");
-    }
-    if (!ui.payloadError.empty()) info = toWide("Error: " + ui.payloadError);
+    std::wstring info = tr(L"Installed: ", L"Установлено: ")
+        + (status.installed ? toWide(status.installedVersion.empty() ? "unknown / incomplete" : status.installedVersion) : tr(L"not installed", L"не установлен"))
+        + tr(L"    Available: ", L"    Доступно: ") + toWide(ui.payload.version.empty() ? SAF_VERSION : ui.payload.version);
+    info += status.vencordPresent
+        ? tr(L"\nYour current Vencord build is preserved for removal. Close every Discord window and its tray icon first.", L"\nТекущая сборка Vencord сохраняется для удаления плагина. Сначала полностью закройте Discord, включая значок в трее.")
+        : tr(L"\nVencord will be installed with the plugin. Close Discord first.", L"\nVencord будет установлен вместе с плагином. Сначала закройте Discord.");
+    if (!ui.payloadError.empty()) info += L"\n" + toWide("Error: " + ui.payloadError);
     SetWindowTextW(ui.info, info.c_str());
-    EnableWindow(ui.install, !ui.discords.empty() && ui.payloadError.empty());
-    EnableWindow(ui.uninstall, status.ourVencord || status.hostPresent);
+    SetWindowTextW(ui.install, status.installed ? tr(L"Update", L"Обновить") : tr(L"Install", L"Установить"));
+    const bool ready = !ui.discords.empty() && ui.payloadError.empty();
+    EnableWindow(ui.install, ready && (!status.installed || newerVersion(ui.payload.version, status.installedVersion)));
+    EnableWindow(ui.reinstall, ready && status.installed && (status.installedVersion.empty() || ui.payload.version == status.installedVersion));
+    EnableWindow(ui.uninstall, status.installed);
+    EnableWindow(ui.keepSettings, status.installed);
 }
 
 void onInstall() {
+    refresh();
     const LRESULT index = SendMessageW(ui.combo, CB_GETCURSEL, 0, 0);
     if (index < 0 || index >= static_cast<LRESULT>(ui.discords.size())) return;
-    refresh();  // the running state may have changed
     const DiscordInstall& target = ui.discords[static_cast<size_t>(index)];
     SetCursor(LoadCursor(nullptr, IDC_WAIT));
     const Result result = install(ui.paths, target, ui.payload, appendLog);
@@ -202,9 +215,10 @@ void onUninstall() {
     if (MessageBoxW(ui.window, tr(L"Remove StreamAudioFilter? Discord must be closed.", L"Удалить StreamAudioFilter? Discord должен быть закрыт."),
             L"StreamAudioFilter", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
     refresh();
-    const Result result = uninstall(ui.paths, ui.discords, appendLog);
+    const bool keepSettings = SendMessageW(ui.keepSettings, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const Result result = uninstall(ui.paths, ui.discords, appendLog, keepSettings);
     refresh();
-    MessageBoxW(ui.window, result.ok ? tr(L"StreamAudioFilter was removed.", L"StreamAudioFilter удалён.") : toWide(result.error).c_str(),
+    MessageBoxW(ui.window, result.ok ? tr(L"StreamAudioFilter was removed. Restart Discord.\nLegacy database entries, if any, are cleared when the plugin is next installed and started.", L"StreamAudioFilter удалён. Перезапустите Discord.\nСтарые записи в базе Discord, если они есть, очищаются при следующем запуске установленного плагина.") : toWide(result.error).c_str(),
         L"StreamAudioFilter", result.ok ? MB_ICONINFORMATION : MB_ICONWARNING);
 }
 
@@ -226,11 +240,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
                               L"Выбор приложений, которые слышат зрители вашей демонстрации экрана в Discord."), 0, 20, 48, 520, 20, 0, ui.font);
         control(L"STATIC", L"Discord:", 0, 20, 84, 70, 22, 0, ui.font);
         ui.combo = control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, 90, 80, 450, 200, kCombo, ui.font);
-        ui.info = control(L"STATIC", L"", 0, 20, 116, 520, 56, kInfo, ui.font);
-        ui.log = control(L"EDIT", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 20, 178, 520, 120, kLog, ui.font);
-        ui.install = control(L"BUTTON", tr(L"Install", L"Установить"), BS_DEFPUSHBUTTON | WS_TABSTOP, 20, 312, 150, 32, kInstall, ui.font);
-        ui.uninstall = control(L"BUTTON", tr(L"Uninstall", L"Удалить"), WS_TABSTOP, 180, 312, 150, 32, kUninstall, ui.font);
-        control(L"BUTTON", tr(L"Close", L"Закрыть"), WS_TABSTOP, 390, 312, 150, 32, kClose, ui.font);
+        ui.info = control(L"STATIC", L"", 0, 20, 116, 520, 76, kInfo, ui.font);
+        ui.log = control(L"EDIT", L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER, 20, 236, 520, 100, kLog, ui.font);
+        ui.install = control(L"BUTTON", tr(L"Install", L"Установить"), BS_DEFPUSHBUTTON | WS_TABSTOP, 20, 350, 118, 32, kInstall, ui.font);
+        ui.reinstall = control(L"BUTTON", tr(L"Reinstall", L"Переустановить"), WS_TABSTOP, 148, 350, 128, 32, kReinstall, ui.font);
+        ui.keepSettings = control(L"BUTTON", tr(L"Keep my settings when uninstalling", L"Сохранить мои настройки при удалении"), BS_AUTOCHECKBOX | WS_TABSTOP, 20, 198, 520, 28, kKeepSettings, ui.font);
+        SendMessageW(ui.keepSettings, BM_SETCHECK, BST_CHECKED, 0);
+        ui.uninstall = control(L"BUTTON", tr(L"Uninstall", L"Удалить"), WS_TABSTOP, 286, 350, 118, 32, kUninstall, ui.font);
+        control(L"BUTTON", tr(L"Close", L"Закрыть"), WS_TABSTOP, 420, 350, 120, 32, kClose, ui.font);
         if (!loadEmbeddedPayload(ui.payload, ui.payloadError)) appendLog("ERROR: " + ui.payloadError);
         else appendLog("StreamAudioFilter " + ui.payload.version + ", Vencord " + ui.payload.vencord);
         refresh();
@@ -239,7 +256,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
     }
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
-        case kInstall: onInstall(); return 0;
+        case kInstall: case kReinstall: onInstall(); return 0;
         case kUninstall: onUninstall(); return 0;
         case kClose: DestroyWindow(hwnd); return 0;
         }
@@ -273,7 +290,7 @@ int runGui(HINSTANCE instance) {
     wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     RegisterClassW(&wc);
 
-    RECT rect { 0, 0, S(560), S(360) };
+    RECT rect { 0, 0, S(560), S(398) };
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     AdjustWindowRect(&rect, style, FALSE);
     CreateWindowW(wc.lpszClassName, L"StreamAudioFilter Setup", style, CW_USEDEFAULT, CW_USEDEFAULT,

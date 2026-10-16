@@ -13,14 +13,25 @@ The installer:
   `%APPDATA%\Vencord\streamAudioFilter\native\<version>`;
 - injects Vencord into Discord only if it is not injected yet (same method as Vencord's installer);
 - keeps an existing Vencord build as `dist.saf-backup` and restores it on uninstall;
-- never changes Vencord's settings (the plugin's rules live there too);
+- preserves other plugins' settings; uninstall can keep or reset StreamAudioFilter's own settings;
 - checks that the plugin and the audio host come from the same release;
 - undoes every step if a later one fails;
 - needs no administrator rights and downloads nothing.
 
-Run it again to **repair** (after a Discord update removed Vencord) or to **uninstall**.
+The installer shows installed and available versions. Run it again to **Update**, **Reinstall** the
+same version (e.g. after a Discord update removed Vencord), or **Uninstall**. Downgrades are refused.
+Removal restores the original Vencord build, or plain Vencord when no original existed. If restoration
+files are missing, reinstall first; the installer refuses to leave Discord with a broken loader.
 
-Command line (same code): `saf-setup.exe --list | --status | --install [--discord <folder>] | --uninstall`.
+**Keep my settings when uninstalling** is checked by default. Uncheck it to reset this plugin's
+settings and rules. Since 0.3.0 rules and floating position live in the plugin's own `preferences.json`.
+Earlier IndexedDB rules/localStorage position migrate on the next plugin start. Reset marks those
+legacy entries as discarded immediately and deletes only the plugin's keys on its next start;
+it never deletes Discord's shared database. Restart Discord after changing the installation.
+
+Command line (same code): `saf-setup.exe --list | --status | --install | --update | --reinstall`;
+installation commands accept `--discord <folder>` and `--payload-dir <folder>`.
+Removal: `saf-setup.exe --uninstall [--remove-settings]`.
 
 ## Manual
 

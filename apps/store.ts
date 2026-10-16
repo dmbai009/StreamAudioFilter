@@ -25,7 +25,7 @@ import { React } from "@webpack/common";
 
 import { DataStore } from "../dataStore";
 import { t } from "../i18n";
-import { type Backend, Native } from "../nativeBridge";
+import { type Backend, IS_NATIVE_AVAILABLE, Native } from "../nativeBridge";
 import { settings } from "../settings";
 import { decideSoundshare, type GoLiveAction, readGoLiveAction } from "../stream/soundshare";
 import type { AppInfo, AppListEntry, DiagnosticsReport, HostStats, NativeEnvironment, RulesState, ShareAudio, ShareStatus } from "../types";
@@ -58,6 +58,8 @@ export interface StoreState {
     panels: Record<PanelKind, number>;
     inVoice: boolean;
     engineRunning: boolean;
+    masterMuted: boolean;
+    mutePending: boolean;
     /** Error of the last user action (cleared by the next successful one). */
     actionError: string;
     patch: { pidHook: boolean; modeHook: boolean; };
@@ -76,6 +78,8 @@ function initialState(): StoreState {
         panels: { settings: 0, popout: 0, floating: 0 },
         inVoice: false,
         engineRunning: false,
+        masterMuted: false,
+        mutePending: false,
         actionError: "",
         patch: { pidHook: false, modeHook: false }
     };
@@ -88,6 +92,14 @@ class Store {
     private idleTimer: ReturnType<typeof setTimeout> | null = null;
     private refreshing = false;
     private loaded = false;
+    private engineStarting: Promise<boolean> | null = null;
+    private hostWork: Promise<void> = Promise.resolve();
+
+    private withHostWork<T>(work: () => Promise<T>): Promise<T> {
+        const next = this.hostWork.then(work);
+        this.hostWork = next.then(() => {}, () => {});
+        return next;
+    }
 
     // Synchronous state for the patched Discord code (it can not await).
     private hostPid = 0;
@@ -149,14 +161,18 @@ class Store {
     }
 
     private async loadRules(): Promise<void> {
-        const raw = await DataStore.get(STORE_KEY);
+        const preferences = await Native.loadPreferences();
+        const raw = preferences.rules ?? (preferences.reset ? undefined : await DataStore.get(STORE_KEY));
         this.set({ rules: normaliseState(raw) });
         this.loaded = true;
         await this.persist();
+        // Delete the legacy shared-DB key only after the owned file is saved.
+        if (IS_NATIVE_AVAILABLE) await DataStore.del(STORE_KEY);
     }
 
     private async persist(): Promise<void> {
-        await DataStore.set(STORE_KEY, this.state.rules);
+        if (IS_NATIVE_AVAILABLE) await Native.savePreferences("rules", this.state.rules);
+        else await DataStore.set(STORE_KEY, this.state.rules);
     }
 
     async refreshHost(): Promise<void> {
@@ -174,10 +190,12 @@ class Store {
     }
 
     async restartHost(): Promise<void> {
-        this.set({ engineRunning: false });
-        await Native.restartHost(this.backend());
-        await this.refreshEnvironment();
-        await this.syncHost();
+        await this.withHostWork(async () => {
+            this.set({ engineRunning: false });
+            await Native.restartHost(this.backend());
+            await this.refreshEnvironment();
+            await this.syncHostNow();
+        });
     }
 
     // ------------------------------------------------- the patched Discord code
@@ -265,6 +283,10 @@ class Store {
 
     /** Brings the host in line with what is needed right now. */
     private async syncHost(): Promise<void> {
+        return this.withHostWork(() => this.syncHostNow());
+    }
+
+    private async syncHostNow(): Promise<void> {
         if (!this.loaded) return;
         const needEngine = this.engineNeeded();
         const needOutput = this.state.inVoice || this.redirectActive;
@@ -298,7 +320,13 @@ class Store {
     }
 
     private async ensureEngine(): Promise<boolean> {
+        if (this.engineStarting) return this.engineStarting;
         if (this.state.engineRunning) return true;
+        this.engineStarting = this.startEngine().finally(() => { this.engineStarting = null; });
+        return this.engineStarting;
+    }
+
+    private async startEngine(): Promise<boolean> {
         if (!this.hostPid) await this.refreshHost();
         const result = await Native.startEngine(settings.store.maxStreams || 12, this.backend());
         if (!result.ok) {
@@ -308,6 +336,13 @@ class Store {
         this.outputWanted = false;
         this.renderPid = 0;
         this.set({ engineRunning: true, actionError: "" });
+        // Restore the gate before starting any output, including after a crash.
+        const mute = await Native.setMasterMuted(this.state.masterMuted);
+        if (!mute.ok) {
+            await Native.stopEngine();
+            this.set({ engineRunning: false, actionError: mute.error ?? "the output mute could not be applied" });
+            return false;
+        }
         return true;
     }
 
@@ -352,6 +387,22 @@ class Store {
     }
 
     // ---------------------------------------------------------------------- rules
+
+    async toggleMasterMuted(): Promise<void> {
+        if (this.state.mutePending) return;
+        const muted = !this.state.masterMuted;
+        this.set({ mutePending: true });
+        try {
+            await this.withHostWork(async () => {
+                if (!(await this.ensureEngine())) return;
+                const result = await Native.setMasterMuted(muted);
+                if (result.ok) this.set({ masterMuted: muted, actionError: "" });
+                else this.set({ actionError: result.error ?? "the output mute could not be applied" });
+            });
+        } finally {
+            this.set({ mutePending: false });
+        }
+    }
 
     async setMode(mode: RulesState["mode"]): Promise<void> {
         this.set({ rules: setModeInState(this.state.rules, mode) });
@@ -471,6 +522,7 @@ class Store {
             runtime: {
                 inVoice: state.inVoice,
                 engineRunning: state.engineRunning,
+                masterMuted: state.masterMuted,
                 renderPid: this.renderPid,
                 redirectActive: this.redirectActive,
                 panels: state.panels,

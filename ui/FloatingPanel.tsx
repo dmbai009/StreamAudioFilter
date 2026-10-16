@@ -19,6 +19,7 @@ import { useEffect, useRef, useState } from "@webpack/common";
 
 import { store, useStoreState } from "../apps/store";
 import { t } from "../i18n";
+import { Native } from "../nativeBridge";
 import { settings } from "../settings";
 import { FilterControls, ProblemsSummary, ShareStatusCard } from "./FilterControls";
 import { Icon, iconKindOf } from "./icons";
@@ -39,9 +40,7 @@ function loadPosition(): Position | null {
 }
 
 function savePosition(position: Position) {
-    try {
-        localStorage.setItem(POSITION_KEY, JSON.stringify(position));
-    } catch { }
+    void Native.savePreferences("position", position).catch(console.error);
 }
 
 function clamp(position: Position, element: HTMLElement | null): Position {
@@ -56,9 +55,22 @@ function clamp(position: Position, element: HTMLElement | null): Position {
 export const FloatingPanel = ErrorBoundary.wrap(function FloatingPanel() {
     const state = useStoreState();
     const [expanded, setExpanded] = useState(false);
-    const [position, setPosition] = useState<Position | null>(loadPosition);
+    const [position, setPosition] = useState<Position | null>(null);
     const panelRef = useRef<HTMLDivElement | null>(null);
     const dragRef = useRef<{ dx: number; dy: number; } | null>(null);
+
+    useEffect(() => {
+        let active = true;
+        void Native.loadPreferences().then(async preferences => {
+            const saved = preferences.position ?? (preferences.reset ? null : loadPosition());
+            if (saved) {
+                await Native.savePreferences("position", saved);
+                if (active && !dragRef.current) setPosition(saved);
+            } else if (active && preferences.reset) setPosition(null);
+            localStorage.removeItem(POSITION_KEY);
+        }).catch(console.error);
+        return () => { active = false; };
+    }, []);
 
     // Keep the list polling only while the panel is expanded.
     useEffect(() => (expanded ? store.openPanel("floating") : undefined), [expanded]);
@@ -106,9 +118,9 @@ export const FloatingPanel = ErrorBoundary.wrap(function FloatingPanel() {
                     dragRef.current = { dx: event.clientX - rect.left, dy: event.clientY - rect.top };
                 }}
             >
-                <Icon kind={iconKindOf(state.share.audio)} size={18} />
+                <Icon kind={state.masterMuted ? "muted" : iconKindOf(state.share.audio)} size={18} />
                 <span className={cl("floating-title")}>
-                    {state.share.audio === "idle" ? `${t("title")} · ${t("floating.noShare")}` : t(`share.${state.share.audio}`)}
+                    {state.masterMuted && state.share.audio === "filtered" ? t("mute.active") : state.share.audio === "idle" ? `${t("title")} · ${t("floating.noShare")}` : t(`share.${state.share.audio}`)}
                 </span>
                 <button className={cl("icon-button")} title={expanded ? t("action.collapse") : t("action.expand")} onClick={() => setExpanded(!expanded)}>
                     {expanded ? "▾" : "▴"}

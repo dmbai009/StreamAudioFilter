@@ -22,8 +22,10 @@ Discord's own, and the rules can be changed while the share is running.
 Discord), run it, choose your Discord, press **Install**, start Discord.
 
 - No administrator rights, nothing is downloaded, nothing outside your user profile is changed.
-- An existing Vencord build is kept and restored on uninstall; Vencord's settings are never touched.
-- Run the installer again to **repair** (a Discord update can remove Vencord) or to **uninstall**.
+- The installer shows installed and available versions. Use **Update**, **Reinstall** (same version), or **Uninstall** when already installed.
+- Removal restores your previous Vencord build, or plain Vencord if it was installed with the plugin. Other plugins' settings are preserved.
+- **Keep my settings when uninstalling** is enabled by default. Disable it to reset this plugin's settings and rules. Legacy entries in Discord's shared database are discarded immediately and physically cleared on the plugin's next start; other database entries are never touched.
+- Restart Discord after making changes. Downgrading with an older installer is refused.
 - Manual installation and building from source: [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Use
@@ -31,6 +33,12 @@ Discord), run it, choose your Discord, press **Install**, start Discord.
 The button next to the microphone opens the quick panel; the full panel is in Settings → Plugins →
 StreamAudioFilter. Each application has one switch: **on = the viewers may hear it**. The default for
 applications without a switch of their own is "allowed" or "blocked" (top of the panel).
+
+**Mute all stream audio** temporarily silences the complete plugin mix in either mode. Press again
+to restore it with the same application choices and levels. Muting also survives audio host/output
+restarts during that Discord session. Your microphone and local playback are unaffected. Window
+shares, disabled filtering and unfiltered fallback bypass the plugin; the panel warns when its mute
+cannot affect the current share.
 
 The headline always says what the viewers get, and only claims what is verified:
 

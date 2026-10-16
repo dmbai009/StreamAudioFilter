@@ -98,6 +98,40 @@ test("listing, capture gate, rules reach the mix, output level", async () => {
     assert.equal(await exited, 0);
 });
 
+test("master mute preserves rules and levels across both modes and output restarts", async () => {
+    const { send, child, exited } = startHost();
+    await send("start", 8);
+    await send("mockApps", app("mock:game", "Game", 4200), app("mock:music", "Music", 4300));
+    await send("rules", 0, 1, "mock:music", 0);
+    await send("output", 1);
+    await sleep(2300);
+    const before = (await send("stats")).output.peak;
+    assert.ok(before >= 200 && before <= 300);
+    assert.equal((await send("mute", 1)).ok, true);
+    for (const mode of [1, 0]) {
+        await send("rules", mode, 1, "mock:game", 1, "mock:music", 0);
+        await sleep(2200);
+        const stats = await send("stats");
+        assert.equal(stats.masterMuted, true);
+        assert.equal(stats.output.peak, 0, "no samples escape in either rule mode");
+        assert.equal(stats.engine.activeStreams, 1, "capture and rules are preserved");
+    }
+    await send("output", 0);
+    await send("output", 1);
+    await sleep(2200);
+    assert.equal((await send("stats")).output.peak, 0, "restarting output does not unmute");
+    assert.equal((await send("mute", "invalid")).ok, false);
+    assert.equal((await send("stats")).masterMuted, true, "bad input cannot unmute");
+    await send("mute", 0);
+    await sleep(2200);
+    const after = (await send("stats")).output.peak;
+    assert.ok(Math.abs(after - before) <= 2, `original level restored: ${before} -> ${after}`);
+    const { apps } = await send("apps");
+    assert.equal(apps.find(a => a.appKey === "mock:music").state, "excluded");
+    child.stdin.end();
+    assert.equal(await exited, 0);
+});
+
 test("Discord's process tree is never captured", async () => {
     const { send, child, exited } = startHost(["--protect", "5000"]);
     await send("start", 8);

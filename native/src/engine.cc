@@ -33,6 +33,7 @@ bool Engine::start(std::string& error) {
 
     const int blockFrames = std::max(1, options_.sampleRate * options_.blockMs / 1000);
     mixer_ = std::make_unique<Mixer>(options_.sampleRate, options_.channels, blockFrames);
+    masterGain_ = masterMuted_ ? 0.0f : 1.0f;
     const size_t outputCapacity = static_cast<size_t>(options_.sampleRate) * options_.outputBufferMs / 1000;
     output_ = std::make_unique<FloatRingBuffer>(std::max<size_t>(outputCapacity, static_cast<size_t>(blockFrames) * 4), options_.channels);
     blockBuffer_.assign(static_cast<size_t>(blockFrames) * options_.channels, 0.0f);
@@ -111,6 +112,13 @@ void Engine::mixBlock(float* out) {
     }
 
     mixer_->mix(mixList_, out);
+
+    const float target = masterMuted_ ? 0.0f : 1.0f;
+    const float step = 1.0f / std::max(1, options_.sampleRate / 50);
+    for (int frame = 0; frame < blockFrames; frame++) {
+        masterGain_ = target > masterGain_ ? std::min(target, masterGain_ + step) : std::max(target, masterGain_ - step);
+        for (int channel = 0; channel < options_.channels; channel++) out[frame * options_.channels + channel] *= masterGain_;
+    }
 
     blocksMixed_++;
     outputFrames_ += static_cast<uint64_t>(blockFrames);

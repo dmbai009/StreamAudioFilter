@@ -19,9 +19,10 @@
  */
 
 import { RendererSettings } from "@main/settings";
+import { DATA_DIR } from "@main/utils/constants";
 import { type ChildProcessWithoutNullStreams, spawn } from "child_process";
 import { app, shell } from "electron";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { join } from "path";
 
 import type { AppInfo, HostInfo, HostStats, MockApp, NativeEnvironment, RuleSetPayload, StartResult, SupportInfo } from "./types";
@@ -55,8 +56,9 @@ class HostClient {
         if (this.child && this.backend === backend && this.info.running) return Promise.resolve(true);
         if (this.child && this.backend !== backend) this.stop();
         if (this.starting) return this.starting;
-        this.starting = this.start(backend).finally(() => { this.starting = null; });
-        return this.starting;
+        const starting = this.start(backend).finally(() => { if (this.starting === starting) this.starting = null; });
+        this.starting = starting;
+        return starting;
     }
 
     private async start(backend: "auto" | "mock"): Promise<boolean> {
@@ -87,13 +89,14 @@ class HostClient {
         this.buffer = "";
         this.stderrTail = "";
         child.stdout.setEncoding("utf8");
-        child.stdout.on("data", (chunk: string) => this.onData(chunk));
+        child.stdout.on("data", (chunk: string) => { if (this.child === child) this.onData(chunk); });
         child.stderr.setEncoding("utf8");
-        child.stderr.on("data", (chunk: string) => { this.stderrTail = (this.stderrTail + chunk).slice(-2000); });
-        child.on("error", error => this.onExit(`the audio host failed: ${error.message}`));
-        child.on("exit", (code, signal) => this.onExit(`the audio host exited (${signal ?? `code ${code}`})${this.stderrTail ? `: ${this.stderrTail.trim()}` : ""}`));
+        child.stderr.on("data", (chunk: string) => { if (this.child === child) this.stderrTail = (this.stderrTail + chunk).slice(-2000); });
+        child.on("error", error => this.onExit(child, `the audio host failed: ${error.message}`));
+        child.on("exit", (code, signal) => this.onExit(child, `the audio host exited (${signal ?? `code ${code}`})${this.stderrTail ? `: ${this.stderrTail.trim()}` : ""}`));
 
         const hello = await this.request(["hello"]);
+        if (this.child !== child) return false;
         if (!hello.ok) {
             this.info.error = hello.error ?? "the audio host did not answer";
             this.stop();
@@ -135,8 +138,8 @@ class HostClient {
         }
     }
 
-    private onExit(reason: string) {
-        if (!this.child) return;
+    private onExit(child: ChildProcessWithoutNullStreams, reason: string) {
+        if (this.child !== child) return;
         this.child = null;
         this.info = { ...this.info, running: false, pid: 0, error: reason };
         for (const [id, pending] of this.pending) {
@@ -172,6 +175,7 @@ class HostClient {
     }
 
     stop() {
+        this.starting = null;
         const { child } = this;
         if (!child) return;
         // Closing stdin is the regular way to end the host: it stops its
@@ -185,7 +189,7 @@ class HostClient {
             } catch { }
         }, 3000);
         child.once("exit", () => clearTimeout(killTimer));
-        this.onExit("stopped");
+        this.onExit(child, "stopped");
         this.info.error = "";
     }
 
@@ -213,11 +217,28 @@ app.on("will-quit", () => host.stop());
  * Discord's and Vencord's own folders, so that their updates can not delete it.
  */
 function dataDir(): string {
-    const env = process.env.VENCORD_USER_DATA_DIR;
-    if (env) return env;
-    const discordData = process.env.DISCORD_USER_DATA_DIR;
-    if (discordData) return join(discordData, "..", "Vencord");
-    return join(app.getPath("userData"), "..", "Vencord");
+    return DATA_DIR;
+}
+
+/** Plugin-owned persistence lets the installer remove settings selectively. */
+export async function loadPreferences(_: unknown): Promise<{ rules?: unknown; position?: { x: number; y: number; }; reset?: boolean; }> {
+    return readPreferences();
+}
+
+function readPreferences(): { rules?: unknown; position?: { x: number; y: number; }; reset?: boolean; } {
+    const file = join(dataDir(), FOLDER_NAME, "preferences.json");
+    if (!existsSync(file)) return {};
+    return JSON.parse(readFileSync(file, "utf8"));
+}
+
+export async function savePreferences(_: unknown, key: "rules" | "position", value: unknown): Promise<void> {
+    if (key !== "rules" && key !== "position") throw new Error("invalid preference key");
+    const directory = join(dataDir(), FOLDER_NAME);
+    mkdirSync(directory, { recursive: true });
+    const previous = readPreferences();
+    const file = join(directory, "preferences.json");
+    writeFileSync(file + ".tmp", JSON.stringify({ ...previous, [key]: value }));
+    renameSync(file + ".tmp", file);
 }
 
 function hostDirectory(): string {
@@ -294,6 +315,11 @@ export async function setRules(_: unknown, rules: RuleSetPayload): Promise<Start
 export async function setOutput(_: unknown, on: boolean): Promise<StartResult> {
     const answer = await host.request(["output", on ? 1 : 0]);
     return { ok: !!answer.ok, error: answer.error, pid: Number(answer.pid ?? 0) };
+}
+
+export async function setMasterMuted(_: unknown, muted: boolean): Promise<StartResult> {
+    const answer = await host.request(["mute", muted ? 1 : 0]);
+    return { ok: !!answer.ok, error: answer.error };
 }
 
 export async function refreshApps(_: unknown): Promise<StartResult> {

@@ -70,21 +70,22 @@ if (-not (Test-Path (Join-Path $VencordDir ".git"))) {
     Run git @("-C", $VencordDir, "checkout", "--force", $VencordRef)
 }
 
-Step "Plugin into src\userplugins\StreamAudioFilter"
-$target = Join-Path $VencordDir "src\userplugins\StreamAudioFilter"
-if (Test-Path $target) { Remove-Item -Recurse -Force $target }
-New-Item -ItemType Directory -Force $target | Out-Null
-foreach ($item in $PluginItems) { Copy-Item -Recurse (Join-Path $root $item) $target }
-
-Step "Build Vencord with the plugin"
+Step "Build plain Vencord and the plugin distribution"
+$target = [IO.Path]::GetFullPath((Join-Path $VencordDir "src\userplugins\StreamAudioFilter"))
+$expectedParent = [IO.Path]::GetFullPath((Join-Path $VencordDir "src\userplugins"))
+if ((Split-Path $target -Parent) -ne $expectedParent) { throw "Invalid plugin directory" }
+if (Test-Path $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+$cleanDir = Join-Path $root "native\build\clean-dist"
+New-Item -ItemType Directory -Force $cleanDir | Out-Null
 $pnpm = (Get-Content (Join-Path $VencordDir "package.json") -Raw | ConvertFrom-Json).packageManager -replace '^pnpm@', ''
-Write-Host "downloading: npm packages of Vencord (pnpm $pnpm)"
 Push-Location $VencordDir
 try {
     $env:CI = "true"
     Run npx @("--yes", "pnpm@$pnpm", "install", "--frozen-lockfile")
-    # --disable-updater: Vencord's updater would replace this build with the
-    # official one and remove the plugin.
+    Run npx @("--yes", "pnpm@$pnpm", "build", "--standalone")
+    Copy-Item (Join-Path $VencordDir "dist\*") $cleanDir -Force
+    New-Item -ItemType Directory -Force $target | Out-Null
+    foreach ($item in $PluginItems) { Copy-Item -Recurse (Join-Path $root $item) $target }
     Run npx @("--yes", "pnpm@$pnpm", "build", "--standalone", "--disable-updater")
 } finally {
     Pop-Location
@@ -95,6 +96,7 @@ $payload = Join-Path $env:TEMP "saf-payload-$PID"
 if (Test-Path $payload) { Remove-Item -Recurse -Force $payload }
 New-Item -ItemType Directory -Force (Join-Path $payload "dist") | Out-Null
 Copy-Item (Join-Path $VencordDir "dist\*") (Join-Path $payload "dist")
+Copy-Item -Recurse $cleanDir $payload
 Copy-Item (Join-Path $root "native\build\host\saf-audio-host.exe") $payload
 Set-Content (Join-Path $payload "saf-version.txt") "version=$version`nprotocol=$protocol`nvencord=$VencordRef"
 try {

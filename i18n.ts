@@ -39,6 +39,12 @@ const en = {
     "share.uncontrolled.detail": "This share started without passing through the plugin (Discord may have changed). The viewers may hear every application. Turn the share's sound off if that matters, and copy the diagnostic report.",
 
     // toolbar / modes
+    "mute.action": "Mute all stream audio",
+    "mute.restore": "Restore stream audio",
+    "mute.active": "All plugin audio is muted",
+    "mute.detail": "Application rules are kept. Restore audio to hear the same mix again.",
+    "mute.hint": "Mute or restore all audio processed by this plugin. Your microphone and local audio stay unchanged.",
+    "mute.bypass": "This share bypasses the plugin. Turn off its Sound switch in Discord to mute it.",
     "mode.label": "Default for apps without a rule",
     "mode.allExcept": "Allowed",
     "mode.allExcept.hint": "New applications are sent unless you switch them off.",
@@ -145,6 +151,12 @@ const ru: Record<Key, string> = {
     "share.uncontrolled": "Звук не контролируется плагином",
     "share.uncontrolled.detail": "Трансляция запустилась в обход плагина (возможно, Discord обновился). Зрители могут слышать все приложения. Выключите звук трансляции, если это важно, и скопируйте диагностический отчёт.",
 
+    "mute.action": "Отключить звук везде",
+    "mute.restore": "Вернуть звук трансляции",
+    "mute.active": "Весь звук плагина отключён",
+    "mute.detail": "Правила приложений сохранены. Верните звук, чтобы снова передавать прежний микс.",
+    "mute.hint": "Отключить или вернуть весь звук, обрабатываемый плагином. Микрофон и звук на вашем компьютере не меняются.",
+    "mute.bypass": "Эта трансляция обходит плагин. Чтобы заглушить её, выключите «Звук» в Discord.",
     "mode.label": "По умолчанию для приложений без правила",
     "mode.allExcept": "Разрешены",
     "mode.allExcept.hint": "Новые приложения передаются, пока вы их не выключите.",

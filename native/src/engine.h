@@ -174,6 +174,10 @@ public:
     /** Replaces the rule set and applies it as soon as possible. */
     void setRules(const RuleSet& rules);
 
+    /** Final output gate; never changes application rules or capture levels. */
+    void setMasterMuted(bool muted) { masterMuted_ = muted; }
+    bool masterMuted() const { return masterMuted_; }
+
     /** Forces a re-enumeration + plan application (manual "refresh"). */
     void requestRefresh();
 
@@ -235,6 +239,9 @@ private:
     std::unique_ptr<IAppEnumerator> enumerator_;
     std::unique_ptr<ICaptureFactory> factory_;
     std::unique_ptr<Mixer> mixer_;
+    std::atomic<bool> masterMuted_ { false };
+    // Only touched by the audio thread. A 20 ms ramp avoids clicks.
+    float masterGain_ = 1.0f;
 
     mutable std::mutex mutex_;
     RuleSet rules_;

@@ -37,6 +37,7 @@ if (pluginVersion !== nativeVersion || protocol !== nativeProtocol) {
 
 const manifest = Object.fromEntries(readFileSync(join(dir, "saf-version.txt"), "utf8").split(/\r?\n/).filter(Boolean).map(l => l.split("=")));
 if (manifest.version !== pluginVersion) fail(`saf-version.txt says ${manifest.version}, the sources say ${pluginVersion}`);
+if (manifest.protocol !== protocol) fail("payload protocol differs from the plugin");
 
 const renderer = readFileSync(join(dir, "dist", "renderer.js"), "utf8");
 if (!renderer.includes(`"${pluginVersion}"`) || !renderer.includes("forceHookSoundshare")) fail("dist/renderer.js does not contain this version of the plugin");
@@ -50,6 +51,11 @@ function walk(base) {
     }
 }
 walk(join(dir, "dist"));
+for (const name of ["patcher.js", "renderer.js", "preload.js"]) {
+    const clean = readFileSync(join(dir, "clean-dist", name), "utf8");
+    if (clean.includes("forceHookSoundshare")) fail("clean Vencord contains the plugin");
+}
+walk(join(dir, "clean-dist"));
 files.push(join(dir, "saf-audio-host.exe"), join(dir, "saf-version.txt"));
 
 const contents = files.map(file => readFileSync(file));

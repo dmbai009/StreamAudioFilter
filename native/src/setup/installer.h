@@ -13,7 +13,7 @@
 //   <Discord>\app-*\resources\app.asar           Vencord's loader (the original
 //                                                Discord app.asar is _app.asar)
 // Nothing outside the user's profile is touched, no administrator rights are
-// needed, Vencord's settings (and so the plugin's rules) are never modified,
+// needed, other plugins' settings are never modified,
 // and every step is undone if a later one fails.
 
 #pragma once
@@ -66,6 +66,7 @@ struct Status {
     std::string installedVersion;
     bool hostPresent = false;
     bool foreignBackup = false;   // the Vencord build that was there before is kept
+    bool installed = false;       // includes incomplete installations
 };
 
 Status readStatus(const Paths& paths);
@@ -83,13 +84,14 @@ struct Result {
  * backup, and rolls back every completed step on failure.
  */
 Result install(const Paths& paths, const DiscordInstall& discord, const Payload& payload, const Log& log);
+bool newerVersion(const std::string& available, const std::string& installed);
 
 /**
  * Removes StreamAudioFilter. A Vencord build that existed before the first
- * installation is restored; a Vencord loader that the installer added is
- * removed again, so Discord ends up as it was.
+ * installation is restored, or plain Vencord is used when no original exists.
+ * Other plugins' settings are preserved; own settings can be kept or reset.
  */
-Result uninstall(const Paths& paths, const std::vector<DiscordInstall>& discords, const Log& log);
+Result uninstall(const Paths& paths, const std::vector<DiscordInstall>& discords, const Log& log, bool keepSettings = true);
 
 std::string toUtf8(const std::wstring& value);
 std::wstring toWide(const std::string& value);

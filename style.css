@@ -13,6 +13,34 @@
 
 /* ------------------------------------------------------------- surfaces */
 
+.vc-saf-master-mute {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-subtle, rgb(128 128 128 / 30%));
+    border-radius: 6px;
+    color: var(--text-default, #dbdee1);
+    background: var(--background-mod-subtle, rgb(128 128 128 / 10%));
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.vc-saf-master-mute[aria-pressed="true"] {
+    color: var(--text-feedback-critical, #da373c);
+    border-color: currentColor;
+    background: var(--background-feedback-critical, rgb(218 55 60 / 12%));
+}
+
+.vc-saf-master-mute:hover { filter: brightness(1.1); }
+.vc-saf-master-mute:focus-visible { outline: 2px solid var(--focus-primary, #5865f2); outline-offset: 2px; }
+.vc-saf-master-mute:disabled { cursor: wait; opacity: 0.65; }
+.vc-saf-master-mute svg { flex: 0 0 auto; }
+
 .vc-saf-popout,
 .vc-saf-floating {
     color: var(--text-default, #dbdee1);
@@ -143,6 +171,7 @@
 }
 
 .vc-saf-controls {
+    container-type: inline-size;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -423,6 +452,7 @@
 }
 
 .vc-saf-row-name {
+    min-width: 0;
     font-weight: 500;
     color: var(--text-default);
     overflow: hidden;
@@ -447,6 +477,22 @@
     background: var(--background-mod-normal, rgb(128 128 128 / 20%));
     color: var(--text-muted);
     cursor: help;
+}
+
+@container (max-width: 300px) {
+    .vc-saf-row-title {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 2px;
+    }
+
+    .vc-saf-row-name,
+    .vc-saf-tag {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 }
 
 .vc-saf-meter {

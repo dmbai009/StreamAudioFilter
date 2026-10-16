@@ -26,6 +26,7 @@ if (!setupExe || !hostExe) {
 }
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = /PLUGIN_VERSION = "([^"]+)"/.exec(readFileSync(join(root, "version.ts"), "utf8"))[1];
+const PROTOCOL = /PROTOCOL_VERSION = (\d+)/.exec(readFileSync(join(root, "version.ts"), "utf8"))[1];
 const ORIGINAL_ASAR = Buffer.alloc(200 * 1024, 7); // stands in for Discord's real app.asar
 
 function profile({ vencord = false, injected = false } = {}) {
@@ -51,12 +52,14 @@ function profile({ vencord = false, injected = false } = {}) {
 function payload({ version = VERSION } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "saf-payload-"));
     mkdirSync(join(dir, "dist"));
+    mkdirSync(join(dir, "clean-dist"));
+    for (const name of ["patcher.js", "renderer.js", "preload.js"]) writeFileSync(join(dir, "clean-dist", name), "// plain Vencord");
     writeFileSync(join(dir, "dist", "patcher.js"), "// patcher");
     writeFileSync(join(dir, "dist", "preload.js"), "// preload");
     writeFileSync(join(dir, "dist", "renderer.js"), `const PLUGIN_VERSION="${VERSION}";forceHookSoundshare();`);
     writeFileSync(join(dir, "dist", "renderer.js.map"), "maps are not installed");
     copyFileSync(hostExe, join(dir, "saf-audio-host.exe"));
-    writeFileSync(join(dir, "saf-version.txt"), `version=${version}\nprotocol=1\nvencord=v1.15.11\n`);
+    writeFileSync(join(dir, "saf-version.txt"), `version=${version}\nprotocol=${PROTOCOL}\nvencord=v1.15.11\n`);
     return dir;
 }
 
@@ -76,7 +79,7 @@ test("lists the newest Discord version", () => {
     rmSync(p.base, { recursive: true, force: true });
 });
 
-test("fresh install, repair, uninstall: Discord ends up exactly as before", () => {
+test("fresh install, repair, uninstall: Vencord stays, plugin is removed", () => {
     const p = profile();
     const pl = payload();
     let r = run(p, "--install", "--payload-dir", pl);
@@ -97,9 +100,9 @@ test("fresh install, repair, uninstall: Discord ends up exactly as before", () =
 
     r = run(p, "--uninstall");
     assert.equal(r.code, 0, r.out);
-    assert.deepEqual(readFileSync(join(p.resources, "app.asar")), ORIGINAL_ASAR, "app.asar restored byte for byte");
-    assert.ok(!existsSync(join(p.resources, "_app.asar")));
-    assert.ok(!existsSync(dist(p)), "the Vencord build the installer added is removed");
+    assert.deepEqual(readFileSync(join(p.resources, "_app.asar")), ORIGINAL_ASAR, "original Discord stays backed up");
+    assert.equal(readFileSync(join(dist(p), "patcher.js"), "utf8"), "// plain Vencord");
+    assert.ok(!existsSync(join(dist(p), "saf-version.txt")), "plugin is gone from the retained Vencord");
     assert.ok(!existsSync(host(p)));
     rmSync(p.base, { recursive: true, force: true });
     rmSync(pl, { recursive: true, force: true });
@@ -164,4 +167,82 @@ test("refuses while Discord is running", async () => {
     assert.ok(!existsSync(dist(p)));
     rmSync(p.base, { recursive: true, force: true });
     rmSync(pl, { recursive: true, force: true });
+});
+
+test("update and reinstall have distinct version checks and preserve preferences", () => {
+    const p = profile(); const pl = payload();
+    try {
+        assert.notEqual(run(p, "--update", "--payload-dir", pl).code, 0);
+        assert.equal(run(p, "--install", "--payload-dir", pl).code, 0);
+        const prefs = join(p.appData, "Vencord", "streamAudioFilter", "preferences.json");
+        writeFileSync(prefs, '{"rules":{"mode":"onlySelected"}}');
+        assert.equal(run(p, "--reinstall", "--payload-dir", pl).code, 0);
+        assert.equal(readFileSync(prefs, "utf8"), '{"rules":{"mode":"onlySelected"}}');
+        assert.notEqual(run(p, "--update", "--payload-dir", pl).code, 0, "same version is not an update");
+        writeFileSync(join(dist(p), "saf-version.txt"), "version=0.2.0\n");
+        assert.equal(run(p, "--update", "--payload-dir", pl).code, 0);
+        assert.match(run(p, "--status").out, new RegExp(`available=${VERSION}`));
+        writeFileSync(join(dist(p), "saf-version.txt"), "version=99.0.0\n");
+        assert.notEqual(run(p, "--install", "--payload-dir", pl).code, 0, "downgrade refused");
+        assert.equal(readFileSync(prefs, "utf8"), '{"rules":{"mode":"onlySelected"}}');
+    } finally { rmSync(p.base, { recursive: true, force: true }); rmSync(pl, { recursive: true, force: true }); }
+});
+
+for (const keep of [true, false]) {
+    for (const order of [0, 1, 2]) {
+        test(`uninstall ${keep ? "preserves" : "resets"} only plugin settings, member position ${order}`, () => {
+            const p = profile({ vencord: true, injected: true }); const pl = payload();
+            try {
+                assert.equal(run(p, "--install", "--payload-dir", pl).code, 0);
+                const settingsDir = join(p.appData, "Vencord", "settings"); mkdirSync(settingsDir);
+                const entries = [["Before", { nested: [1, "StreamAudioFilter", true] }], ["After", { value: "quote: \" and }" }]];
+                entries.splice(order, 0, ["StreamAudioFilter", { enabled: true, volume: 0.7 }]);
+                const settings = { plugins: Object.fromEntries(entries), theme: "light" };
+                const file = join(settingsDir, "settings.json"); writeFileSync(file, JSON.stringify(settings, null, 4));
+                const prefs = join(p.appData, "Vencord", "streamAudioFilter", "preferences.json"); writeFileSync(prefs, '{"rules":{"a":true}}');
+                const r = run(p, "--uninstall", ...(keep ? [] : ["--remove-settings"])); assert.equal(r.code, 0, r.out);
+                if (!keep) delete settings.plugins.StreamAudioFilter;
+                assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), settings);
+                assert.deepEqual(JSON.parse(readFileSync(prefs, "utf8")), keep ? { rules: { a: true } } : { reset: true });
+                assert.ok(!existsSync(host(p)));
+                assert.equal(readFileSync(join(dist(p), "patcher.js"), "utf8"), "// the user's own Vencord");
+            } finally { rmSync(p.base, { recursive: true, force: true }); rmSync(pl, { recursive: true, force: true }); }
+        });
+    }
+}
+
+test("a later foreign Vencord build is never replaced on uninstall", () => {
+    const p = profile({ vencord: true, injected: true }); const pl = payload();
+    try {
+        assert.equal(run(p, "--install", "--payload-dir", pl).code, 0);
+        rmSync(join(dist(p), "saf-version.txt"));
+        writeFileSync(join(dist(p), "patcher.js"), "// newer foreign Vencord");
+        const r = run(p, "--uninstall"); assert.equal(r.code, 0, r.out);
+        assert.equal(readFileSync(join(dist(p), "patcher.js"), "utf8"), "// newer foreign Vencord");
+        assert.ok(!existsSync(host(p)));
+    } finally { rmSync(p.base, { recursive: true, force: true }); rmSync(pl, { recursive: true, force: true }); }
+});
+
+test("corrupt shared settings abort removal without touching installed files", () => {
+    const p = profile(); const pl = payload();
+    try {
+        assert.equal(run(p, "--install", "--payload-dir", pl).code, 0);
+        const settingsDir = join(p.appData, "Vencord", "settings"); mkdirSync(settingsDir);
+        const file = join(settingsDir, "settings.json"); writeFileSync(file, '{"plugins":broken');
+        const r = run(p, "--uninstall", "--remove-settings"); assert.notEqual(r.code, 0);
+        assert.equal(readFileSync(file, "utf8"), '{"plugins":broken');
+        assert.ok(existsSync(host(p)) && existsSync(join(dist(p), "saf-version.txt")));
+    } finally { rmSync(p.base, { recursive: true, force: true }); rmSync(pl, { recursive: true, force: true }); }
+});
+
+test("missing backups refuse removal until repaired", () => {
+    const p = profile(); const pl = payload();
+    try {
+        assert.equal(run(p, "--install", "--payload-dir", pl).code, 0);
+        rmSync(join(p.appData, "Vencord", "streamAudioFilter", "clean-dist"), { recursive: true });
+        assert.notEqual(run(p, "--uninstall").code, 0);
+        assert.ok(existsSync(host(p)) && existsSync(join(dist(p), "saf-version.txt")));
+        assert.equal(run(p, "--reinstall", "--payload-dir", pl).code, 0);
+        assert.equal(run(p, "--uninstall").code, 0);
+    } finally { rmSync(p.base, { recursive: true, force: true }); rmSync(pl, { recursive: true, force: true }); }
 });

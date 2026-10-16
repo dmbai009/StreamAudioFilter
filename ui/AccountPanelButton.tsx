@@ -58,8 +58,8 @@ export const AccountPanelButton = ErrorBoundary.wrap(function AccountPanelButton
 
     if (!showAccountPanelButton) return null;
 
-    const kind = iconKindOf(state.share.audio);
-    const tooltip = state.share.audio === "idle" ? t("button.tooltip") : `${t("title")}: ${t(`share.${state.share.audio}`)}`;
+    const kind = state.masterMuted ? "muted" : iconKindOf(state.share.audio);
+    const tooltip = state.masterMuted ? t("mute.active") : state.share.audio === "idle" ? t("button.tooltip") : `${t("title")}: ${t(`share.${state.share.audio}`)}`;
 
     return (
         <Popout

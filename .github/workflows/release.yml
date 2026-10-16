@@ -56,6 +56,8 @@ jobs:
           Expand-Archive (Join-Path $env:RUNNER_TEMP "bundle\streamaudiofilter-vencord-dist.zip") $unpacked
           New-Item -ItemType Directory -Force (Join-Path $payload "dist") | Out-Null
           Copy-Item (Join-Path $unpacked "Vencord-dist\*") (Join-Path $payload "dist")
+          New-Item -ItemType Directory -Force (Join-Path $payload "clean-dist") | Out-Null
+          Copy-Item (Join-Path $unpacked "Vencord-clean\*") (Join-Path $payload "clean-dist")
           Copy-Item (Join-Path $env:RUNNER_TEMP "host\saf-audio-host.exe") $payload
           $version = (Select-String -Path version.ts -Pattern 'PLUGIN_VERSION = "([^"]+)"').Matches[0].Groups[1].Value
           $protocol = (Select-String -Path version.ts -Pattern 'PROTOCOL_VERSION = (\d+)').Matches[0].Groups[1].Value
@@ -109,7 +111,14 @@ jobs:
 
           **Recommended:** download **StreamAudioFilter-Setup.exe**, quit Discord (tray icon → Quit), run it, choose your Discord, press **Install**, start Discord. The plugin is enabled by default; its panel opens from the button next to the microphone. Run the installer again to repair (for example after a Discord update removed Vencord) or to uninstall.
 
-          The installer needs no administrator rights and downloads nothing. An existing Vencord build is kept and restored on uninstall; Vencord's settings are never changed.
+          ## Changes
+
+          - A single **Mute all stream audio** button silences the plugin mix in both application modes and restores the previous mix.
+          - Installer shows installed/available versions and offers Install, Update, Reinstall and Uninstall.
+          - Removal preserves Vencord and lets you keep or reset this plugin's settings. Legacy database keys are cleared on the plugin's next start.
+          - Fixed a race when replacing the audio host and a Windows test issue.
+
+          The installer needs no administrator rights and downloads nothing. Existing Vencord and other plugins' settings are preserved. Restart Discord after installation or removal.
 
           **Manual:** \`streamaudiofilter-vencord-dist.zip\` (Vencord with the plugin, see its README) plus \`saf-audio-host.exe\` into \`%APPDATA%\\Vencord\\streamAudioFilter\\native\\\`. All files must come from the same release.
 

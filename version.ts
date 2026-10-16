@@ -9,6 +9,6 @@
  * Must match native/src/version.h; CI fails when they differ.
  */
 
-export const PLUGIN_VERSION = "0.2.0";
+export const PLUGIN_VERSION = "0.3.0";
 /** Line protocol spoken with saf-audio-host (SAF_PROTOCOL). */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;

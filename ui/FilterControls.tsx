@@ -17,6 +17,7 @@ import { entriesOf, problemsOf, store, type StoreState, useStoreState } from "..
 import { AppRow } from "../components/AppRow";
 import { type I18nKey, t } from "../i18n";
 import type { AppListEntry, ShareAudio } from "../types";
+import { Icon } from "./icons";
 
 const cl = (name: string) => `vc-saf-${name}`;
 
@@ -44,6 +45,14 @@ function silentAllowedApps(state: StoreState) {
 
 export function ShareStatusCard({ state, compact }: { state: StoreState; compact?: boolean; }) {
     const { audio, reason } = state.share;
+    if (state.masterMuted && audio === "filtered") {
+        return (
+            <div className={cl("status")} data-tone="warn" role="status">
+                <div className={cl("status-title")}>{t("mute.active")}</div>
+                <div className={cl("status-detail")}>{t("mute.detail")}</div>
+            </div>
+        );
+    }
     const silent = audio === "filtered" ? silentAllowedApps(state) : [];
     if (silent.length) {
         return (
@@ -120,7 +129,7 @@ function ListSection({ title, entries, state }: { title: string; entries: AppLis
                     key={entry.appKey}
                     entry={entry}
                     icon={entry.exePath ? state.icons[entry.exePath] : null}
-                    share={state.share.audio}
+                    share={state.masterMuted && state.share.audio === "filtered" ? "noAudio" : state.share.audio}
                     onChange={allowed => void store.setAllowed(entry, allowed)}
                 />
             ))}
@@ -137,6 +146,18 @@ export function FilterControls({ compact = false }: { compact?: boolean; }) {
 
     return (
         <div className={cl("controls")} data-compact={compact ? "true" : "false"}>
+            <button
+                className={cl("master-mute")}
+                aria-pressed={state.masterMuted}
+                disabled={state.mutePending}
+                title={t("mute.hint")}
+                onClick={() => void store.toggleMasterMuted()}
+            >
+                <Icon kind={state.masterMuted ? "muted" : "off"} size={18} />
+                <span>{t(state.masterMuted ? "mute.restore" : "mute.action")}</span>
+            </button>
+            {state.masterMuted && ["window", "off", "unfiltered", "uncontrolled"].includes(state.share.audio)
+                && <div className={cl("hint")} role="status">{t("mute.bypass")}</div>}
             <ShareStatusCard state={state} compact={compact} />
             <ProblemsSummary state={state} />
             <ModeSelector mode={state.rules.mode} />
