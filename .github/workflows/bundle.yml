@@ -3,7 +3,8 @@ name: Prebuilt Vencord bundle
 # Builds "Vencord + StreamAudioFilter" as a ready to use distribution, so that a
 # user can install the plugin without Node.js, without a compiler and without
 # running a build: unpack the bundle into %APPDATA%\Vencord\dist, drop the
-# native addon next to it, restart Discord.
+# audio host next to it, restart Discord. Release builds embed it into
+# StreamAudioFilter-Setup.exe.
 #
 # The same job runs for pull requests, so the bundle cannot rot unnoticed: if a
 # change stops the plugin from ending up in the bundle, this job fails.
@@ -22,7 +23,6 @@ on:
       - "**"
     paths:
       - "apps/**"
-      - "audio/**"
       - "components/**"
       - "stream/**"
       - "ui/**"
@@ -126,7 +126,7 @@ jobs:
           # The tracked files of this repository (the working tree contains
           # nothing else that belongs into a plugin).
           git -C "$GITHUB_WORKSPACE" archive --format=tar HEAD | tar -xf - -C "$target"
-          rm -rf "$target/ci-out"
+          rm -rf "$target/ci-out" "$target/native" "$target/tests" "$target/scripts" "$target/docs" "$target/dev"
           test -f "$target/index.tsx"
           test -f "$target/native.ts"
           test -f "$target/style.css"
@@ -187,56 +187,39 @@ jobs:
           } > "$bundle/VENCORD-VERSION.txt"
 
           cat > "$bundle/README.txt" <<'EOF'
-          Vencord + StreamAudioFilter
-          ==========================
+          Vencord + StreamAudioFilter (manual installation)
+          ================================================
 
-          This is Vencord with the StreamAudioFilter plugin already built into it,
-          so nothing has to be compiled on your machine. What is inside:
+          Most users should run StreamAudioFilter-Setup.exe from the same release
+          instead: it does everything below, keeps a backup and can uninstall.
 
-            Vencord-dist\        the Vencord build (put these files into %APPDATA%\Vencord\dist)
+          What is inside:
+            Vencord-dist\        Vencord with the plugin built in (-> %APPDATA%\Vencord\dist)
             VENCORD-VERSION.txt  which Vencord commit this is and when it was built
-            README.txt           this file
 
-          Install (Windows)
-          -----------------
-            1. Have Vencord injected into Discord. If you have not done that yet,
-               run the official installer from https://vencord.dev/download once.
-               (It is also what removes the patch again later.)
+          Manual installation (Windows)
+          -----------------------------
+            1. Quit Discord completely (tray icon -> Quit Discord).
+            2. Have Vencord injected into Discord (official installer from
+               https://vencord.dev/download), or run StreamAudioFilter-Setup.exe.
+            3. Replace the contents of %APPDATA%\Vencord\dist\ with Vencord-dist\*.
+            4. Put saf-audio-host.exe from the same release into
+                   %APPDATA%\Vencord\streamAudioFilter\native\
+            5. Start Discord. StreamAudioFilter is enabled by default; its panel
+               opens from the button next to the microphone.
 
-            2. Copy everything inside Vencord-dist\ into:
-                   %APPDATA%\Vencord\dist\
-               Overwrite the files that are already there. In PowerShell:
-
-                   Copy-Item -Recurse -Force .\Vencord-dist\* "$env:APPDATA\Vencord\dist\"
-
-            3. Put the native audio addon of the same release into:
-                   %APPDATA%\Vencord\streamAudioFilter\native\streamaudiofilter.node
-               The folder is created by the plugin on its first start; the addon
-               is the file streamaudiofilter.node from the release page, next to
-               this archive, and its SHA-256 is printed there.
-
-            4. Start Discord, open Settings -> Plugins, enable StreamAudioFilter,
-               open its panel and press "Check support" in the diagnostics.
+          All parts must come from the same release: the plugin refuses an audio
+          host that speaks another protocol and says so in its panel.
 
           Updates
           -------
-          Vencord's own updater is switched off in this build on purpose: it would
-          replace the whole dist with the official one and remove the plugin with
-          it. To move to a newer Vencord, download a newer release of this
-          repository and repeat steps 2 and 3. Re-running the official Vencord
-          installer (or its "Repair" option) also replaces these files.
+          Vencord's own updater is off in this build: it would replace this dist
+          with the official one and remove the plugin. Install a newer release of
+          StreamAudioFilter instead (the installer keeps all Vencord settings).
+          If a Discord update removes Vencord, run the installer again (Repair).
 
-          Requirements
-          ------------
-            * Windows 10 x64 build 19041 (2004) or newer, or Windows 11.
-            * Discord Desktop (Stable, PTB or Canary) with Vencord injected.
-            * No administrator rights; no virtual audio device; no change to any
-              Windows or Discord audio setting. The filter only replaces the audio
-              track of a screen share.
-
-          Licence: GPL-3.0-or-later. This bundle contains Vencord
-          (https://github.com/Vencord/Vencord), which is GPL-3.0-or-later as well,
-          together with its third party notices (the *.LEGAL.txt files).
+          Licence: GPL-3.0-or-later. Contains Vencord (GPL-3.0-or-later) and its
+          third party notices (the *.LEGAL.txt files).
           EOF
 
           cd "$bundle"

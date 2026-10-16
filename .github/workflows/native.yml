@@ -1,278 +1,168 @@
-name: Native audio core
+name: Build and test
 
 on:
   # Reused by .github/workflows/release.yml, which only publishes what this
   # workflow has built and tested.
   workflow_call:
   push:
-    # Branches only: a tag is handled by the release workflow, which calls this
-    # one and then attaches the resulting addon to the release.
     branches:
       - "**"
-    paths:
-      - "native/**"
-      - "scripts/**"
-      - "tests/**"
-      - "apps/**"
-      - "audio/**"
-      - "stream/**"
-      - "ui/**"
-      - "components/**"
-      - "dev/**"
-      - "*.ts"
-      - "*.tsx"
-      - ".github/workflows/native.yml"
   pull_request:
   workflow_dispatch:
 
-# Every job below is a gate: a compiler error, a failing check or a missing
-# artifact fails the run. The only step that is allowed to fail is the optional
-# log publication (a fork can not push), and that step never hides a failure
-# because it runs after the build and test steps and reports their status.
+# Every job is a gate: a compiler error, a failing check, a type error, a lint
+# error or a missing artifact fails the run. Logs that help diagnosing a
+# failure are uploaded as artifacts; nothing is committed back to the branch.
 jobs:
-  # Fast feedback on Linux: the portable DSP + engine tests need no Windows SDK.
-  portable-tests:
-    name: Portable tests (DSP + engine + N-API)
+  # The portable parts on Linux: DSP + engine tests (g++), and the audio host
+  # with its signal generator, tested through its real line protocol.
+  portable:
+    name: Engine and host (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Versions agree (plugin, host, installer)
+        run: |
+          plugin=$(sed -n 's/.*PLUGIN_VERSION = "\([^"]*\)".*/\1/p' version.ts)
+          protocol=$(sed -n 's/.*PROTOCOL_VERSION = \([0-9]*\).*/\1/p' version.ts)
+          native=$(sed -n 's/.*SAF_VERSION "\([^"]*\)".*/\1/p' native/src/version.h)
+          nprotocol=$(sed -n 's/.*SAF_PROTOCOL \([0-9]*\).*/\1/p' native/src/version.h)
+          manifest=$(sed -n 's/.*name="StreamAudioFilter.Setup" version="\([0-9.]*\)\.0".*/\1/p' native/src/setup/setup.manifest)
+          echo "plugin $plugin/$protocol, native $native/$nprotocol, setup manifest $manifest"
+          test -n "$plugin" && test "$plugin" = "$native" && test "$protocol" = "$nprotocol" && test "$plugin" = "$manifest" \
+            || { echo "::error::version.ts, native/src/version.h and setup.manifest must carry the same version"; exit 1; }
 
       - name: DSP and engine tests (g++)
         run: ./scripts/run-native-tests.sh
 
-      - name: Build the addon and test the JS <-> C++ boundary
-        run: |
-          npm install --no-save --no-audit --no-fund --legacy-peer-deps node-api-headers
-          ./scripts/run-addon-tests.sh
+      - name: Build the audio host (signal generator only)
+        run: ./scripts/build-host.sh
 
-  # The rule engine and the stream interceptor are plain TypeScript: they run
-  # without Vencord and without Discord, which is why they are a required gate.
-  typescript-tests:
-    name: TypeScript tests (rules + fail closed interceptor)
+      - name: Host protocol tests
+        run: node tests/host.test.mjs native/build/host/saf-audio-host
+
+  # The plugin's TypeScript: pure tests, then type check + lint inside the
+  # Vencord release the bundle is built from, exactly as Vencord's CI does.
+  typescript:
+    name: Plugin (TypeScript, inside Vencord)
     runs-on: ubuntu-latest
+    env:
+      CI: "true"
+      VENCORD_REF: v1.15.11
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      - name: Rule engine tests
+      - name: Rule tests
         run: npx --yes tsx tests/rules.test.ts
 
-      - name: Stream interceptor tests
-        run: npx --yes tsx tests/intercept.test.ts
+      - name: Share audio decision tests (fail closed, Discord patch regexes)
+        run: npx --yes tsx tests/soundshare.test.ts
 
-  # Compiles the real WASAPI backend with MSVC and produces the addon.
-  #
-  # The build log of this job is committed into ci-out/ by the last step: GitHub
-  # Actions log downloads are not reachable from every network, while a file in
-  # the repository is. The log is filtered down to compiler diagnostics so it
-  # stays small.
-  windows-build:
-    name: Windows build (MSVC) + addon artifact
+      - name: Vencord ${{ env.VENCORD_REF }}
+        run: |
+          git clone --depth 1 --branch "$VENCORD_REF" https://github.com/Vencord/Vencord "$RUNNER_TEMP/vencord"
+          cd "$RUNNER_TEMP/vencord"
+          pnpm_version="$(node -e 'console.log(require("./package.json").packageManager.replace(/^pnpm@/, ""))')"
+          npm install --global "pnpm@$pnpm_version"
+          pnpm install --frozen-lockfile
+
+      - name: tsc + eslint
+        run: VENCORD_DIR="$RUNNER_TEMP/vencord" bash dev/typecheck.sh
+
+  # Windows: the real WASAPI build, the same portable tests compiled by MSVC,
+  # the host and the installer tested on Windows, and the diagnostic probe.
+  windows:
+    name: Windows (MSVC)
     runs-on: windows-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # The installer scripts are the files users are told to run, so a typo in
-      # one of them is a broken installation for everybody: they are parsed here
-      # with the very parser PowerShell itself uses.
       - name: PowerShell scripts parse
         shell: pwsh
         run: |
           $failed = $false
-          foreach ($file in @("scripts/install.ps1", "scripts/build-native.ps1")) {
-              Write-Host "parsing $file"
+          foreach ($file in @("scripts/install.ps1", "scripts/build-host.ps1")) {
               $errors = $null
-              [System.Management.Automation.Language.Parser]::ParseFile(
-                  (Resolve-Path $file).Path, [ref]$null, [ref]$errors) | Out-Null
-              foreach ($error in $errors) {
-                  $failed = $true
-                  Write-Host "::error file=$file::$($error.Message)"
-              }
+              [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file).Path, [ref]$null, [ref]$errors) | Out-Null
+              foreach ($e in $errors) { $failed = $true; Write-Host "::error file=$file::$($e.Message)" }
           }
           if ($failed) { exit 1 }
-          Write-Host "both scripts parse"
 
-      - name: Build native addon (node-gyp + MSVC)
-        shell: bash
-        run: |
-          set -uo pipefail
-          mkdir -p ci-out
-
-          set +e
-          ( cd native && npx --yes node-gyp rebuild --verbose 2>&1 ) > ci-out/full-build.log
-          status=$?
-          set -e
-
-          echo "node-gyp exit code: $status"
-          grep -aiE "error [A-Z]*[0-9]+|error:|fatal error|warning C[0-9]+|Error\(s\)|LNK[0-9]+" ci-out/full-build.log \
-            | sed -e 's/^ *//' | sort -u | head -400 > ci-out/addon-build.log || true
-          rm -f ci-out/full-build.log
-
-          # A compiler error is a failure of this job, not a line in a log file.
-          if [ "$status" -ne 0 ]; then
-              echo "::error::node-gyp failed with exit code $status (see ci-out/addon-build.log)"
-              tail -40 ci-out/addon-build.log || true
-              exit "$status"
-          fi
-
-          test -f native/build/Release/streamaudiofilter.node
-
-      # The standalone probe is what a user runs when the plugin reports a
-      # failure: it activates the same process loopback capture, with the same
-      # agile completion handler, without Discord. It is built and shipped by CI
-      # so that no user needs a compiler to get a diagnosis.
-      - name: Build the standalone process loopback probe (cl.exe)
-        shell: cmd
-        run: |
-          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSINSTALL=%%i
-          call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul
-          cd native
-          if not exist ..\ci-out mkdir ..\ci-out
-          if not exist build\probe mkdir build\probe
-          cl /nologo /std:c++17 /EHsc /W4 /D_USE_MATH_DEFINES /DNOMINMAX /DWIN32_LEAN_AND_MEAN /Fo:build\probe\ /Fe:build\probe\process-loopback-probe.exe tools\process_loopback_probe\main.cc src\hr_advice.cc /link ole32.lib oleaut32.lib uuid.lib mmdevapi.lib > ..\ci-out\probe-build.log 2>&1
-          if errorlevel 1 (
-              echo === the probe did not compile ===
-              type ..\ci-out\probe-build.log
-              for /f "delims=" %%l in ('findstr /C:"error" ..\ci-out\probe-build.log') do echo ::error title=probe build::%%l
-              exit /b 1
-          )
-          build\probe\process-loopback-probe.exe --help
-          if errorlevel 1 exit /b 1
-          echo probe built (usage path answers)
-
-      - name: Probe smoke test (lists, usage and report file only)
-        shell: cmd
-        run: |
-          cd native
-          rem The probe is NOT pointed at a live capture here: a headless runner has
-          rem no audio endpoint, and a guaranteed silence would look like a capture
-          rem failure. It is compiled and exercised in its non capture paths, and
-          rem the capture itself is run by the user on a real machine (docs/PROBE.md).
-          build\probe\process-loopback-probe.exe --list >nul
-          if errorlevel 1 exit /b 1
-          echo the probe starts and enumerates processes
-
-          rem What is checked below is the reporting core, which every diagnosis from
-          rem a user's machine goes through: the stage log reaches a file as UTF-8,
-          rem the usage failures exit with 2 on stderr, and with --json the one
-          rem machine readable line is the only thing on stdout. The last one is a
-          rem real defect that was fixed: the "[report] this run is written to ..."
-          rem notice used to be printed to stdout in --json mode as well, which put
-          rem a second line in front of the JSON.
-          del /q probe-report.txt probe-stdout.txt probe-stderr.txt 2>nul
-          build\probe\process-loopback-probe.exe --json --report probe-report.txt > probe-stdout.txt 2> probe-stderr.txt
-          if errorlevel 3 exit /b 1
-          if not errorlevel 2 exit /b 1
-          echo the missing target exits with 2
-          if not exist probe-report.txt (
-              echo === the report file was not written ===
-              exit /b 1
-          )
-          findstr /C:"--playing" probe-report.txt >nul
-          if errorlevel 1 (
-              echo === the report file does not contain the usage text ===
-              exit /b 1
-          )
-          findstr /C:"[report]" probe-stdout.txt >nul
-          if not errorlevel 1 (
-              echo ::error title=probe stdout contract::with --json, stdout must carry the JSON line and nothing else
-              type probe-stdout.txt
-              exit /b 1
-          )
-          findstr /C:"--playing" probe-stderr.txt >nul
-          if errorlevel 1 (
-              echo === the usage error did not reach stderr ===
-              exit /b 1
-          )
-          rem The report file is not empty and no audio was written: it is a text log.
-          findstr /C:"no audio is written" probe-report.txt >nul
-          if errorlevel 1 (
-              echo === the report file is not a text log ===
-              exit /b 1
-          )
-          echo the report file, the stderr usage path and the --json stdout contract are intact
+      - name: Build the audio host
+        shell: pwsh
+        run: ./scripts/build-host.ps1
 
       - name: Portable tests compiled and run by cl.exe
         shell: cmd
         run: |
-          mkdir ci-out 2>nul
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSINSTALL=%%i
           call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul
           cd native
           if not exist build\msvc mkdir build\msvc
+          set FLAGS=/nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX
+          set DSP=src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc
+          cl %FLAGS% /Fe:build\msvc\dsp_tests.exe /Fo:build\msvc\ test\dsp_tests.cc %DSP% || exit /b 1
+          cl %FLAGS% /Fe:build\msvc\engine_tests.exe /Fo:build\msvc\ test\engine_tests.cc src\app_identity.cc src\capture_group.cc src\engine.cc src\hr_advice.cc src\mock\mock_backend.cc %DSP% || exit /b 1
+          build\msvc\dsp_tests.exe || exit /b 1
+          build\msvc\engine_tests.exe || exit /b 1
 
-          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\dsp_tests.exe /Fo:build\msvc\ test\dsp_tests.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc > ..\ci-out\msvc-tests.log 2>&1
-          if errorlevel 1 exit /b 1
+      - name: Host protocol tests (Windows build)
+        run: node tests/host.test.mjs native/build/host/saf-audio-host.exe
 
-          cl /nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /D_USE_MATH_DEFINES /DNOMINMAX /Fe:build\msvc\engine_tests.exe /Fo:build\msvc\ test\engine_tests.cc src\app_identity.cc src\capture_group.cc src\engine.cc src\hr_advice.cc src\mock\mock_backend.cc src\dsp\ring_buffer.cc src\dsp\convert.cc src\dsp\resampler.cc src\dsp\mixer.cc >> ..\ci-out\msvc-tests.log 2>&1
-          if errorlevel 1 exit /b 1
-
-          build\msvc\dsp_tests.exe >> ..\ci-out\msvc-tests.log 2>&1
-          if errorlevel 1 exit /b 1
-
-          build\msvc\engine_tests.exe >> ..\ci-out\msvc-tests.log 2>&1
-          if errorlevel 1 exit /b 1
-
-          findstr /C:"failure(s)" ..\ci-out\msvc-tests.log
-          findstr /C:"0 failure(s)" ..\ci-out\msvc-tests.log >nul
-          if errorlevel 1 (
-              rem On pull_request events the ci-out log cannot be pushed back to a
-              rem branch (the checkout is a detached merge ref), so the failing
-              rem lines are published as annotations here — otherwise the only copy
-              rem of them is a job log that is not reachable from everywhere.
-              powershell -NoProfile -Command "$f = Select-String -Path ..\ci-out\msvc-tests.log -Pattern 'FAIL' -Context 0,1 | ForEach-Object { $_.Line.Trim() + ' >> ' + (($_.Context.PostContext -join ' ')).Trim() }; Write-Host ('::error title=portable tests (cl.exe) failed::' + ($f -join ' | '))"
-              type ..\ci-out\msvc-tests.log
-              exit /b 1
-          )
-
-          type ..\ci-out\msvc-tests.log
-
-      - name: Check that the addon was produced
-        shell: bash
+      - name: Build the installer with a test payload
+        shell: pwsh
         run: |
-          if [ ! -f native/build/Release/streamaudiofilter.node ]; then
-              echo "::error::the native addon was not built — see ci-out/addon-build.log"
-              exit 1
-          fi
-          ls -l native/build/Release/streamaudiofilter.node
+          $payload = Join-Path $env:RUNNER_TEMP "payload"
+          New-Item -ItemType Directory -Force (Join-Path $payload "dist") | Out-Null
+          $version = (Select-String -Path version.ts -Pattern 'PLUGIN_VERSION = "([^"]+)"').Matches[0].Groups[1].Value
+          Set-Content (Join-Path $payload "dist\patcher.js") "// test"
+          Set-Content (Join-Path $payload "dist\preload.js") "// test"
+          Set-Content (Join-Path $payload "dist\renderer.js") "const v=`"$version`";forceHookSoundshare();"
+          Copy-Item native\build\host\saf-audio-host.exe $payload
+          Set-Content (Join-Path $payload "saf-version.txt") "version=$version`nprotocol=1`nvencord=test"
+          ./scripts/build-host.ps1 -Setup -PayloadDir $payload
 
-      - name: Upload addon
-        if: always()
+      - name: Installer tests (fake user profile)
+        run: node tests/setup.test.mjs native/build/setup/saf-setup.exe native/build/host/saf-audio-host.exe
+
+      - name: Build the standalone process loopback probe
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set VSINSTALL=%%i
+          call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul
+          cd native
+          if not exist build\probe mkdir build\probe
+          cl /nologo /std:c++17 /EHsc /W4 /D_USE_MATH_DEFINES /DNOMINMAX /DWIN32_LEAN_AND_MEAN /Fo:build\probe\ /Fe:build\probe\process-loopback-probe.exe tools\process_loopback_probe\main.cc src\hr_advice.cc /link ole32.lib oleaut32.lib uuid.lib mmdevapi.lib || exit /b 1
+          build\probe\process-loopback-probe.exe --list >nul || exit /b 1
+
+      - name: Upload the audio host
         uses: actions/upload-artifact@v4
         with:
-          name: streamaudiofilter-node-windows-x64
-          path: native/build/Release/streamaudiofilter.node
-          if-no-files-found: warn
+          name: saf-audio-host-windows-x64
+          path: native/build/host/saf-audio-host.exe
+          if-no-files-found: error
 
-      - name: Upload probe
-        if: always()
+      - name: Upload the probe
         uses: actions/upload-artifact@v4
         with:
-          name: streamaudiofilter-probe-windows-x64
+          name: process-loopback-probe-windows-x64
           path: native/build/probe/process-loopback-probe.exe
-          if-no-files-found: warn
+          if-no-files-found: error
 
-      - name: Publish logs
+      - name: Upload build logs
         if: always()
-        shell: bash
-        run: |
-          mkdir -p ci-out
-          git config user.email "ci@streamaudiofilter.invalid"
-          git config user.name "StreamAudioFilter CI"
-          git add -f ci-out
-          git commit -m "ci: native build output" || echo "nothing to publish"
-          # A fork can not push back; the diagnostics are still in the job log.
-          git push || echo "log push failed"
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-logs
+          path: native/build/**/*.log
+          if-no-files-found: ignore
