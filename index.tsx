@@ -57,6 +57,9 @@ export default definePlugin({
     description: "Choose which applications the viewers of a screen share hear. Local playback, the microphone and the voice call are never touched.",
     searchTerms: ["audio", "stream", "screenshare", "go live", "wasapi", "sound", "share"],
     tags: ["Voice", "Media"],
+    // Installed by its own installer for exactly this purpose; an explicit
+    // "off" in Vencord's settings is still respected.
+    enabledByDefault: true,
     authors: [{ name: "StreamAudioFilter", id: 0n }],
 
     settings,
