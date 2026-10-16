@@ -40,9 +40,13 @@ bool Engine::start(std::string& error) {
         startErrors_.clear();
     }
 
+    pullBlock_.assign(static_cast<size_t>(blockFrames) * options_.channels, 0.0f);
+    pullOffset_ = static_cast<size_t>(blockFrames);  // empty: the first pull mixes
+    lastPullMs_ = 0;
+
     running_ = true;
     refreshRequested_ = true;
-    mixThread_ = std::thread([this] { mixLoop(); });
+    if (!options_.externalClock) mixThread_ = std::thread([this] { mixLoop(); });
     watchThread_ = std::thread([this] { watchLoop(); });
     return true;
 }
@@ -86,6 +90,42 @@ void Engine::addWarning(const std::string& warning) {
 
 // --------------------------------------------------------------- mix thread
 
+void Engine::mixBlock(float* out) {
+    const int blockFrames = mixer_->blockFrames();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mixList_.clear();
+        for (auto& [key, stream] : streams_) {
+            if (stream->retired) continue;
+            // The only place the mixer's copy of the target is written: the
+            // watch thread never touches MixSource, so no field of it is
+            // shared between threads without the lock.
+            stream->mix.gainTarget = stream->wantedGain;
+            mixList_.push_back(&stream->mix);
+        }
+    }
+
+    mixer_->mix(mixList_, out);
+
+    blocksMixed_++;
+    outputFrames_ += static_cast<uint64_t>(blockFrames);
+
+    {
+        // Publish the meters, and hand streams whose fade out completed to the
+        // watch thread, which owns the (potentially blocking) destruction.
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& [key, stream] : streams_) {
+            if (stream->retired) continue;
+            stream->peak = stream->mix.peak;
+            stream->starved = stream->mix.starvedFrames;
+            if (stream->mix.finishedFadeOut() && stream->wantedGain <= 0.0f) {
+                stream->retired = true;
+                starvedFrames_ += stream->mix.starvedFrames;
+            }
+        }
+    }
+}
+
 void Engine::mixLoop() {
     const int blockFrames = mixer_->blockFrames();
     const auto blockDuration = microseconds(options_.blockMs * 1000);
@@ -94,32 +134,8 @@ void Engine::mixLoop() {
     auto* blockOut = blockBuffer_.data();
 
     while (running_) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            mixList_.clear();
-            for (auto& [key, stream] : streams_) {
-                if (stream->retired) continue;
-                mixList_.push_back(&stream->mix);
-            }
-        }
-
-        mixer_->mix(mixList_, blockOut);
+        mixBlock(blockOut);
         output_->write(blockOut, static_cast<size_t>(blockFrames));
-
-        blocksMixed_++;
-        outputFrames_ += static_cast<uint64_t>(blockFrames);
-
-        {
-            // Streams whose fade out completed are handed to the watch thread,
-            // which owns the (potentially blocking) destruction.
-            std::lock_guard<std::mutex> lock(mutex_);
-            for (auto& [key, stream] : streams_) {
-                if (!stream->retired && stream->mix.finishedFadeOut() && !isActiveInMixLocked(key)) {
-                    stream->retired = true;
-                    starvedFrames_ += stream->mix.starvedFrames;
-                }
-            }
-        }
 
         next += blockDuration;
         const auto now = steady_clock::now();
@@ -133,13 +149,37 @@ void Engine::mixLoop() {
     }
 }
 
+size_t Engine::pull(float* destination, size_t frames) {
+    if (!destination) return 0;
+    const size_t channels = static_cast<size_t>(options_.channels);
+    if (!running_ || !mixer_) {
+        std::memset(destination, 0, frames * channels * sizeof(float));
+        return 0;
+    }
+
+    lastPullMs_ = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    const size_t blockFrames = static_cast<size_t>(mixer_->blockFrames());
+    size_t written = 0;
+    while (written < frames) {
+        if (pullOffset_ >= blockFrames) {
+            mixBlock(pullBlock_.data());
+            pullOffset_ = 0;
+        }
+        const size_t n = std::min(blockFrames - pullOffset_, frames - written);
+        std::memcpy(destination + written * channels, pullBlock_.data() + pullOffset_ * channels, n * channels * sizeof(float));
+        pullOffset_ += n;
+        written += n;
+    }
+    return written;
+}
+
 bool Engine::isActiveInMixLocked(const std::string& appKey) const {
     const auto it = streams_.find(appKey);
     if (it == streams_.end()) return false;
     if (it->second->retired) return false;
     // A stream stays in the mix while it fades; it only counts as active when
     // its gain target is non zero.
-    return it->second->mix.gainTarget > 0.0f;
+    return it->second->wantedGain > 0.0f;
 }
 
 // ------------------------------------------------------------- watch thread
@@ -159,6 +199,19 @@ void Engine::watchLoop() {
             applyPlan();
         }
 
+        if (options_.externalClock) {
+            // Nobody pulls (the output is off): a fade can not run, so streams
+            // that are no longer wanted are retired directly. Nothing is heard
+            // in that state, so no click is possible either.
+            const int64_t now = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+            if (now - lastPullMs_.load() > 250) {
+                std::lock_guard<std::mutex> lock(mutex_);
+                for (auto& [key, stream] : streams_) {
+                    if (!stream->retired && stream->wantedGain <= 0.0f) stream->retired = true;
+                }
+            }
+        }
+
         collectRetired();
         std::this_thread::sleep_for(std::min(changeCheck, milliseconds(100)));
     }
@@ -167,7 +220,31 @@ void Engine::watchLoop() {
 void Engine::applyPlan() {
     std::vector<SessionInfo> sessions = enumerator_->enumerate();
     std::vector<ProcessNode> tree = enumerator_->processes();
+
+    // The host's own output is a session too: it must never be listed, and
+    // never be captured (it carries the mix itself).
+    if (options_.selfPid != 0) {
+        sessions.erase(std::remove_if(sessions.begin(), sessions.end(), [&](const SessionInfo& session) {
+            return session.pid == options_.selfPid;
+        }), sessions.end());
+    }
+
     std::vector<AppGroup> groups = groupSessions(sessions, tree);
+    protectProcessTrees(groups, tree, options_.protectedRoots,
+        "Discord's own audio (voice chat, notification sounds) is never sent to the share.");
+
+    RuleSet rules;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        rules = rules_;
+    }
+    const std::map<std::string, CapturePlan> plans = planCaptures(groups, tree, [&](const std::string& key) { return rules.transmit(key); });
+
+    auto wantedRoots = [&](const std::string& key) -> const std::vector<uint32_t>* {
+        const auto it = plans.find(key);
+        if (it == plans.end() || !it->second.blockedReason.empty() || it->second.roots.empty()) return nullptr;
+        return &it->second.roots;
+    };
 
     // Decide what should be captured. Starting a capture can take tens of
     // milliseconds, so it happens outside of the lock.
@@ -184,25 +261,24 @@ void Engine::applyPlan() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (const auto& group : groups) {
-            const bool transmit = rules_.transmit(group.appKey) && group.capturable && !group.roots.empty();
-            if (!transmit) continue;
+            const auto* roots = wantedRoots(group.appKey);
+            if (!roots) continue;
 
             const auto existing = streams_.find(group.appKey);
             if (existing != streams_.end()) {
                 // The capture is being restarted (or is still fading out):
                 // run the plan again once it is gone instead of waiting for
                 // the next periodic reconciliation.
-                if (existing->second->retired || existing->second->mix.gainTarget <= 0.0f) replan = true;
+                if (existing->second->retired || existing->second->wantedGain <= 0.0f) replan = true;
                 continue;
             }
-            if (std::any_of(pending.begin(), pending.end(), [&](const Pending& p) { return p.appKey == group.appKey; })) continue;
             if (pending.size() + streams_.size() >= options_.maxStreams) {
                 const std::string warning = "The limit of simultaneous captures has been reached (" + std::to_string(options_.maxStreams)
                     + " applications). Part of the audio is not sent.";
                 if (std::find(warnings_.begin(), warnings_.end(), warning) == warnings_.end()) warnings_.push_back(warning);
                 break;
             }
-            pending.push_back(Pending { group.appKey, group.displayName, group.roots, nullptr, {} });
+            pending.push_back(Pending { group.appKey, group.displayName, *roots, nullptr, {} });
         }
     }
 
@@ -227,33 +303,27 @@ void Engine::applyPlan() {
         std::lock_guard<std::mutex> lock(mutex_);
 
         snapshot_ = groups;
+        plans_ = plans;
 
         // 1. Retire streams that must not be transmitted any more.
         for (auto& [key, stream] : streams_) {
             if (stream->retired) continue;
-            const AppGroup* group = nullptr;
-            for (const auto& candidate : groups) {
-                if (candidate.appKey == key) {
-                    group = &candidate;
-                    break;
-                }
-            }
-
-            const bool wanted = group && rules_.transmit(key) && group->capturable && !group->roots.empty();
+            const auto* roots = wantedRoots(key);
 
             // One capture is bound to one set of process trees. When an
             // application is started a second time (or one of its instances
             // closes), that set changes: the capture is restarted so the new
             // instance becomes audible and no instance is captured twice.
+            // A capture that died (device change) is replaced the same way.
             // Only this application is affected - the share, the other
             // applications and the output stream keep running.
-            if (wanted && group->roots != stream->rootPids) {
-                stream->mix.gainTarget = 0.0f;
+            if (roots && (*roots != stream->rootPids || (stream->source && !stream->source->alive()))) {
+                stream->wantedGain = 0.0f;
                 replan = true;
                 continue;
             }
 
-            if (!wanted) stream->mix.gainTarget = 0.0f;
+            if (!roots) stream->wantedGain = 0.0f;
         }
 
         // 2. Add newly started captures.
@@ -279,8 +349,13 @@ void Engine::applyPlan() {
             stream->mix.key = item.appKey;
             stream->mix.gain = 0.0f;
             stream->mix.gainTarget = 1.0f;
+            stream->wantedGain = 1.0f;
             // 20 ms fade: audible clicks are impossible, the delay is not.
             stream->mix.rampStep = 1.0f / (0.02f * static_cast<float>(options_.sampleRate));
+            if (options_.externalClock) {
+                stream->mix.primeFrames = static_cast<size_t>(options_.sampleRate) * static_cast<size_t>(std::max(0, options_.primeMs)) / 1000;
+                stream->mix.maxBacklogFrames = static_cast<size_t>(options_.sampleRate) * static_cast<size_t>(std::max(0, options_.maxBacklogMs)) / 1000;
+            }
             streams_[item.appKey] = std::move(stream);
             startErrors_.erase(item.appKey);
         }
@@ -326,17 +401,42 @@ void Engine::destroyStreams() {
 // ------------------------------------------------------------------ queries
 
 std::vector<AppView> Engine::apps() {
+    // Everything that belongs to a stream is copied while the lock is held:
+    // a retired stream is destroyed by the watch thread right after the lock
+    // is released, so no pointer to it may outlive this block.
+    struct Live {
+        bool captured = false;
+        uint64_t starved = 0;
+        size_t instances = 0;
+        std::string format;
+        int latencyMs = -1;
+        std::string error;
+        float peak = 0.0f;
+    };
+
     std::vector<AppGroup> snapshot;
-    std::map<std::string, StreamState*> live;
+    std::map<std::string, Live> live;
     std::map<std::string, std::string> errors;
-    std::vector<std::string> warnings;
+    std::map<std::string, CapturePlan> plans;
     RuleSet rules;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         snapshot = snapshot_;
-        for (auto& [key, stream] : streams_) live[key] = stream.get();
+        plans = plans_;
+        for (auto& [key, stream] : streams_) {
+            Live info;
+            info.captured = !stream->retired && stream->wantedGain > 0.0f;
+            info.starved = stream->starved;
+            info.instances = stream->instances;
+            if (stream->source) {
+                info.format = stream->source->formatDescription();
+                info.latencyMs = stream->source->latencyMs();
+                info.error = stream->source->lastError();
+            }
+            info.peak = stream->peak;
+            live[key] = std::move(info);
+        }
         errors = startErrors_;
-        warnings = warnings_;
         rules = rules_;
     }
 
@@ -358,30 +458,38 @@ std::vector<AppView> Engine::apps() {
         view.peak = std::max(group.peak, 0.0f);
         view.instances = group.roots.size();
 
+        const auto planIt = plans.find(group.appKey);
+        if (planIt != plans.end()) {
+            view.blockedReason = planIt->second.blockedReason;
+            view.coveredBy = planIt->second.coveredBy;
+        }
+
         const auto streamIt = live.find(group.appKey);
         if (streamIt != live.end()) {
-            StreamState* stream = streamIt->second;
-            view.captured = !stream->retired && stream->mix.gainTarget > 0.0f;
-            view.starvedFrames = stream->mix.starvedFrames;
-            if (stream->instances) view.instances = stream->instances;
-            view.format = stream->source ? stream->source->formatDescription() : "";
-            view.latencyMs = stream->source ? stream->source->latencyMs() : -1;
-            if (stream->source) view.error = stream->source->lastError();
-            if (stream->mix.peak > view.peak) view.peak = stream->mix.peak;
+            const Live& stream = streamIt->second;
+            view.captured = stream.captured;
+            view.starvedFrames = stream.starved;
+            if (stream.instances) view.instances = stream.instances;
+            view.format = stream.format;
+            view.latencyMs = stream.latencyMs;
+            view.error = stream.error;
+            if (stream.peak > view.peak) view.peak = stream.peak;
         }
         const auto errorIt = errors.find(group.appKey);
         if (errorIt != errors.end() && view.error.empty()) view.error = errorIt->second;
 
         if (!view.capturable) {
             view.state = "unsupported";
+        } else if (view.transmitting && !view.blockedReason.empty()) {
+            view.state = "blocked";
         } else if (!view.error.empty()) {
             view.state = "error";
         } else if (!view.transmitting) {
             view.state = "excluded";
         } else if (view.captured) {
             view.state = "transmitting";
-        } else if (group.playing) {
-            view.state = "silent";
+        } else if (!view.coveredBy.empty()) {
+            view.state = "covered";
         } else {
             view.state = "silent";
         }
@@ -411,7 +519,7 @@ EngineStats Engine::stats() {
         stats.warnings = warnings_;
         stats.activeStreams = 0;
         for (const auto& [key, stream] : streams_) {
-            if (!stream->retired && stream->mix.gainTarget > 0.0f) stats.activeStreams++;
+            if (!stream->retired && stream->wantedGain > 0.0f) stats.activeStreams++;
         }
         stats.limiterGain = mixer_ ? mixer_->limiterGain() : 1.0f;
         stats.limitedBlocks = mixer_ ? mixer_->limitedBlocks() : 0;

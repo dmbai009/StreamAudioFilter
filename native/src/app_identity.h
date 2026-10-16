@@ -15,6 +15,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -71,5 +73,49 @@ struct AppGroup {
  * identical, never based on the display name.
  */
 std::vector<AppGroup> groupSessions(const std::vector<SessionInfo>& sessions, const std::vector<ProcessNode>& tree);
+
+/**
+ * True when @p pid is @p ancestor or lies anywhere below it in the process tree.
+ * Walks parent links with a cycle guard; an unknown pid is not a descendant.
+ */
+bool isInProcessTree(uint32_t pid, uint32_t ancestor, const std::vector<ProcessNode>& tree);
+
+/**
+ * Marks every group with a process inside one of @p protectedRoots (Discord's
+ * own process tree) as not capturable. Discord's voice chat and notification
+ * sounds must never reach the share, whatever the rules say — and this must
+ * not depend on an executable path, which changes with every Discord update.
+ */
+void protectProcessTrees(std::vector<AppGroup>& groups, const std::vector<ProcessNode>& tree,
+    const std::vector<uint32_t>& protectedRoots, const std::string& reason);
+
+/**
+ * What one transmitted application really needs to be captured.
+ *
+ * Windows can only capture whole process trees. That has two consequences
+ * across *different* applications, both handled here:
+ *  * an excluded application running inside the tree of a transmitted one
+ *    (a game started by a launcher) can not be separated from it. Capturing
+ *    the launcher would leak the game, so the launcher is blocked (fail closed)
+ *    and the reason is reported;
+ *  * a transmitted application inside the tree of another transmitted one is
+ *    already in that capture. Capturing it again would mix it in twice, so its
+ *    covered roots are dropped (coveredBy names the capture it is part of).
+ */
+struct CapturePlan {
+    /** Roots that need their own capture; empty when blocked or covered. */
+    std::vector<uint32_t> roots;
+    /** Non empty: this application must not be captured, and why. */
+    std::string blockedReason;
+    /** Non empty: every root is already captured through this application. */
+    std::string coveredBy;
+};
+
+/**
+ * @param transmit the effective rule for an app key (mode + overrides + gate)
+ * @returns one entry per transmitted, capturable group with at least one root
+ */
+std::map<std::string, CapturePlan> planCaptures(const std::vector<AppGroup>& groups, const std::vector<ProcessNode>& tree,
+    const std::function<bool(const std::string&)>& transmit);
 
 } // namespace saf

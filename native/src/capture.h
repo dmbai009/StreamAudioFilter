@@ -110,6 +110,13 @@ public:
 
     /** Non empty when the capture died (device removed, access lost, ...). */
     virtual std::string lastError() const { return {}; }
+
+    /**
+     * False once a started capture stopped delivering for good (its thread
+     * ended on an error). The engine replaces such a capture instead of
+     * leaving the application silent for the rest of the share.
+     */
+    virtual bool alive() const { return true; }
 };
 
 class ICaptureFactory {

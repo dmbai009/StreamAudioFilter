@@ -156,8 +156,13 @@ public:
 
     void stop() override {
         running_ = false;
-        if (stopEvent_) SetEvent(stopEvent_);
-        if (captureEvent_) SetEvent(captureEvent_);
+        {
+            // The handles are created by the capture thread: read them under
+            // the same lock it uses.
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopEvent_) SetEvent(stopEvent_);
+            if (captureEvent_) SetEvent(captureEvent_);
+        }
         if (thread_.joinable()) thread_.join();
 
         {
@@ -181,6 +186,8 @@ public:
     }
 
     int latencyMs() const override { return latencyMs_; }
+
+    bool alive() const override { return !died_; }
 
     std::string lastError() const override {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -416,6 +423,8 @@ private:
     FloatRingBuffer buffer_;
     std::thread thread_;
     std::atomic<bool> running_ { false };
+    /** The capture thread ended on its own (error), not through stop(). */
+    std::atomic<bool> died_ { false };
     HANDLE stopEvent_ = nullptr;
     HANDLE captureEvent_ = nullptr;
 
@@ -465,6 +474,9 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
         return;
     }
 
+    // Every COM object of this thread lives in this scope, so all of them are
+    // released before CoUninitialize below.
+    [&] {
     ComPtr<IAudioClient> client;
     ComPtr<IAudioCaptureClient> captureClient;
     HRESULT hr = activate(client, error);
@@ -489,7 +501,6 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
         if (error.empty()) error = "[capture-start] " + formatHresult(hr, "the capture could not be started");
         setError(error);
         ready.set_value(error);
-        if (comOwned) CoUninitialize();
         return;
     }
 
@@ -500,7 +511,11 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
     while (running_) {
         const DWORD wait = WaitForSingleObject(captureEvent_, 200);
         if (!running_) break;
-        if (wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT) break;
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT) {
+            setError("[wait] the capture event could not be waited on");
+            died_ = true;
+            break;
+        }
 
         UINT32 packetFrames = 0;
         while (SUCCEEDED(captureClient->GetNextPacketSize(&packetFrames)) && packetFrames > 0) {
@@ -513,6 +528,7 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
             if (FAILED(hr)) {
                 if (hr == AUDCLNT_E_DEVICE_INVALIDATED || hr == AUDCLNT_E_RESOURCES_INVALIDATED) {
                     setError("[device-changed] " + formatHresult(hr, "the audio device changed during the capture"));
+                    died_ = true;
                     running_ = false;
                 } else if (hr != AUDCLNT_S_BUFFER_EMPTY) {
                     setError("[data] " + formatHresult(hr, "the capture buffer could not be read"));
@@ -526,6 +542,8 @@ void ProcessLoopbackCapture::threadMain(std::promise<std::string> ready) {
     }
 
     if (client) client->Stop();
+    }();
+
     if (comOwned) CoUninitialize();
 }
 
