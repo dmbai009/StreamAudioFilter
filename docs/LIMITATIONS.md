@@ -126,6 +126,17 @@ Three further statements that the first run corrected, all three now built into 
   portable tests pin the difference down: the same stereo buffer reads `0.1999` at 500 Hz and `0.0000` at
   1 kHz when it is treated as mono. Everything else that run proved (activation, format, `Start`, the
   packet rate, and the `--process chrome.exe` capture with 764032 non-zero samples) is unaffected.
+* **"Non-zero samples arrived" is not "audio arrived".** The noise floor of the capture path is made of
+  samples that are not exactly zero: a real run measured 580972 of them at a peak of -90.2 dBFS
+  (`audiorepeater.exe`, with nothing audible to repeat). Both the probe and the plugin's own capability
+  walk therefore report the level in dBFS and classify the window as silence, a noise floor or audio,
+  with the -60 dBFS threshold printed next to the classification. That threshold is a reporting
+  convention, not a property of the machine: `--json` carries `peakDbfs` and `content` so anything that
+  consumes the output can apply its own.
+* **The probe's `--spawn-tone` check now passes on this machine.** A second copy of the probe played
+  1 kHz for the whole window and the capture of that process reported a peak of exactly `0.200000` and a
+  1 kHz magnitude of `0.198461`; the same check through the whole system loopback came back at
+  `0.199965`. So on build 19045 the per process capture does follow the content of another process.
 
 Checking a specific machine without Discord: **`process-loopback-probe.exe`**
 
@@ -134,9 +145,10 @@ The repository also ships a standalone probe (built by CI, attached to every rel
 — COM apartment, handler agility, the activation call, the callback, `GetActivateResult`,
 `QueryInterface`, format negotiation, `Start`, the packets themselves, the teardown — and can play a
 1 kHz tone either from its own process (`--self-tone`, advisory only) or from a second copy of itself
-(`--spawn-tone`, decisive: the tone comes from another process, so it has to appear in the capture). It writes nothing to disk, installs
-nothing and changes no setting; it is the fastest way to tell whether a machine supports the capture
-and, when it does not, which step is responsible.
+(`--spawn-tone`, decisive: the tone comes from another process, so it has to appear in the capture). It
+writes no audio anywhere and installs nothing; the only file it can create is the text log you ask for
+with `--report <file>`. It is the fastest way to tell whether a machine supports the capture and, when it
+does not, which step is responsible.
 
 Checking your own build with one command (PowerShell):
 

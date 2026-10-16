@@ -22,6 +22,15 @@
 #include <cstdint>
 #include <string>
 
+// E_ILLEGAL_METHOD_CALL — the code this whole file exists for — is defined by the
+// Windows SDK's <winerror.h>, but the mingw-w64 headers leave the name out, and two
+// Windows translation units here compare their own constants against it. The value is
+// the documented one; when the SDK does define the macro, the SDK's definition wins and
+// windows_util.cc asserts at compile time that the two agree.
+#ifndef E_ILLEGAL_METHOD_CALL
+#    define E_ILLEGAL_METHOD_CALL 0x8000000EL
+#endif
+
 namespace saf {
 
 /** Named HRESULT values, usable without the Windows SDK. */

@@ -434,6 +434,47 @@ static void testPacketMeasure() {
     window.reset();
     CHECK(window.samples == 0 && window.nonzero == 0 && window.peak == 0.0, "reset clears the statistics");
 
+    // --- level reporting: what a window contains has to be judged by its level,
+    //     not by the number of samples that are not exactly zero. A real run of the
+    //     probe measured 290486 non-zero samples at a peak of -90 dBFS, which is the
+    //     noise floor of the capture path and not audio.
+    CHECK(std::fabs(saf::dsp::dbfs(1.0)) < 1e-9, "full scale is 0 dBFS, got %f", saf::dsp::dbfs(1.0));
+    CHECK(std::fabs(saf::dsp::dbfs(0.5) + 6.0206) < 0.001, "half scale is -6.02 dBFS, got %f", saf::dsp::dbfs(0.5));
+    CHECK(std::fabs(saf::dsp::dbfs(0.2) + 13.9794) < 0.001, "a 0.2 amplitude tone is -13.98 dBFS, got %f",
+          saf::dsp::dbfs(0.2));
+    CHECK(saf::dsp::dbfs(0.0) == -200.0, "exact zero has a floor value, got %f", saf::dsp::dbfs(0.0));
+    CHECK(saf::dsp::dbfs(-0.5) == -200.0, "a negative amplitude has no level, got %f", saf::dsp::dbfs(-0.5));
+
+    saf::dsp::SampleStats quiet;
+    saf::dsp::measureFloats(silence.data(), silence.size(), quiet);
+    CHECK(saf::dsp::classifyContent(quiet) == saf::dsp::PacketContent::Silent,
+          "nothing measured is silence, not audio");
+    CHECK(!quiet.carriesAudio(), "and it does not carry audio either");
+
+    std::vector<float> dither(1000);
+    for (size_t i = 0; i < dither.size(); i++) {
+        dither[i] = (i % 2 == 0) ? 0.000031f : -0.000031f;
+    }
+    saf::dsp::SampleStats floorLevel;
+    saf::dsp::measureFloats(dither.data(), dither.size(), floorLevel);
+    CHECK(floorLevel.nonzero == dither.size(), "every dither sample is non-zero, got %llu",
+          static_cast<unsigned long long>(floorLevel.nonzero));
+    CHECK(floorLevel.carriesAudio(), "and the raw fact stays what it is: non-zero samples arrived");
+    CHECK(saf::dsp::classifyContent(floorLevel) == saf::dsp::PacketContent::NoiseFloor,
+          "but a peak of -90 dBFS is a noise floor, not audio (peak %f dBFS)", saf::dsp::dbfs(floorLevel.peak));
+
+    saf::dsp::SampleStats audible;
+    saf::dsp::measureFloats(tone.data(), tone.size(), audible);
+    CHECK(saf::dsp::classifyContent(audible) == saf::dsp::PacketContent::Audio, "a 0.2 amplitude tone is audio");
+    CHECK(saf::dsp::dbfs(audible.peak) > saf::dsp::kNoiseFloorDbfs, "and its peak is above the reporting threshold");
+
+    // A window with one loud sample in it is audio: the peak decides, not the count.
+    std::vector<float> mostlyQuiet(1000, 0.000031f);
+    mostlyQuiet[500] = 0.5f;
+    saf::dsp::SampleStats mixed;
+    saf::dsp::measureFloats(mostlyQuiet.data(), mostlyQuiet.size(), mixed);
+    CHECK(saf::dsp::classifyContent(mixed) == saf::dsp::PacketContent::Audio, "one loud sample makes the window audio");
+
     // --- the tone search: found when present, not found when absent
     const double present = saf::dsp::toneMagnitude(tone.data(), tone.size(), rate, 1000.0);
     CHECK(present > 0.15, "a 0.2 amplitude 1 kHz tone reads near its amplitude, got %f", present);

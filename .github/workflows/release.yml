@@ -128,8 +128,11 @@ jobs:
             * process-loopback-probe.exe (also in this release) is optional: it
               performs the same per process capture activation on its own, without
               Discord, and names the step that fails. It installs nothing and
-              writes no audio to disk. Usage: --self-tone, --process <name.exe>,
-              --list; see docs/PROBE.md.
+              writes no audio to disk; the only file it can create is a text log
+              you ask for with --report <file>. Usage: --playing, --spawn-tone
+              (the decisive check: a second process plays a 1 kHz tone and the
+              probe captures it), --process <name.exe>, --list; see
+              docs/PROBE.md.
             * No administrator rights, no virtual audio device, no change to any
               Windows or Discord audio setting. The filter only replaces the
               audio track of the screen share.
@@ -161,24 +164,32 @@ jobs:
           **\`process-loopback-probe.exe\` — the diagnosis without Discord.** A console program that
           performs the same process loopback activation the plugin uses (with the same agile completion
           handler), prints every stage with its HRESULT, and measures what really arrives: packets,
-          frames, frames flagged silent, **non-zero samples**, peak and RMS. It installs nothing, changes
-          no setting and writes no audio to disk:\`\`\`
+          frames, frames flagged silent, **non-zero samples**, the peak in dBFS, and whether the window
+          contains audio, only a noise floor, or silence. It installs nothing, changes no setting and
+          writes no audio anywhere; the only file it can create is the text log you ask for with
+          \`--report <file>\`:
 
               process-loopback-probe.exe --playing                           (who is playing right now)
               process-loopback-probe.exe --spawn-tone --seconds 8            (decisive: a second process plays the tone)
               process-loopback-probe.exe --spawn-tone --system --seconds 8   (the same check on the device path)
               process-loopback-probe.exe --process spotify.exe --seconds 8   (the real case)
+              process-loopback-probe.exe --spawn-tone --seconds 8 --report run.txt   (keep the log in a file)
 
-          \`\`\`Use it before reporting a capture problem. A run whose \`data\` line shows non-zero samples
-          means audio really flows; a red stage names the step and the HRESULT that refused it. Two
-          results that do **not** prove anything, and are called out in the output for that reason: a
-          high frame count with zeros (a stream can be perfectly paced and silent), and a missing tone
-          that the probe played *itself* (with one process as both source and observer the run cannot
-          tell a capture that missed the content apart from a tone that never reached the mix of the
-          captured device — \`--spawn-tone\` is the decisive version). The tone search itself was fixed
-          after the first real run reported a tone that was in the audio as missing: it analysed
-          interleaved stereo as if it were mono, which moves a 1 kHz tone to half its frequency.
-          Details in \`docs/PROBE.md\`, which also quotes the first real run on Windows 10 19045.7725.
+          Use it before reporting a capture problem: the \`[levels]\` lines say what a window contains —
+          audio, only a noise floor, or silence — with the peak in dBFS next to it, and a red stage names
+          the step and the HRESULT that refused it. Three results that do **not** prove anything, and are
+          called out in the output for that reason: a high frame count with zeros (a stream can be
+          perfectly paced and silent), a large count of non-zero samples (the noise floor of the capture
+          path is made of samples that are not exactly zero — 580972 of them at -90.2 dBFS in one real
+          run), and a missing tone that the probe played *itself* (with one process as both source and
+          observer the run cannot tell a capture that missed the content apart from a tone that never
+          reached the mix of the captured device — \`--spawn-tone\`, a second process, is the decisive
+          version). The tone search itself was fixed after the first real run reported a tone that was in
+          the audio as missing: it analysed interleaved stereo as if it were mono, which moves a 1 kHz
+          tone to half its frequency. Details in \`docs/PROBE.md\`, which also quotes the real runs on
+          Windows 10 19045.7725 — including the one that answered the question: \`--spawn-tone\` found its
+          1 kHz tone in the per process capture (magnitude 0.198461, peak 0.200000) and in the system
+          loopback (0.199965).
 
           **Gates this build passed:** portable DSP and engine tests (\`g++\`), the TypeScript
           rule and interceptor tests, the MSVC build, and the same portable tests compiled and
@@ -194,6 +205,23 @@ jobs:
           The file is built from source by this run; the checksum below is the one
           of the asset in this release.
           EOF
+
+          # The notes are Markdown that a user reads. v0.1.4 shipped with an unbalanced code
+          # fence - one glued to the end of a sentence, the next glued to the front of the next
+          # paragraph - which made GitHub render the rest of the notes as a code block.
+          if grep -nE '^[[:space:]]*```[^`[:space:]]' /tmp/RELEASE-NOTES.md; then
+              echo "::error::the release notes have text glued to a code fence"
+              exit 1
+          fi
+          fences=$(grep -cE '^[[:space:]]*```[[:space:]]*$' /tmp/RELEASE-NOTES.md || true)
+          if [ $((fences % 2)) -ne 0 ]; then
+              echo "::error::the release notes have an unbalanced code fence ($fences)"
+              exit 1
+          fi
+          grep -q 'Everything in this release was built by CI' /tmp/RELEASE-NOTES.md || {
+              echo "::error::the release notes do not start with the CI statement"
+              exit 1
+          }
 
           addon_hash=$(sha256sum dist/streamaudiofilter.node | cut -d' ' -f1)
           bundle_hash=$(sha256sum dist/streamaudiofilter-vencord-dist.zip | cut -d' ' -f1)
