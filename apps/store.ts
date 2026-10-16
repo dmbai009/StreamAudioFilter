@@ -91,6 +91,12 @@ class Store {
 
     // Synchronous state for the patched Discord code (it can not await).
     private hostPid = 0;
+    /**
+     * The host's render process: the pid Discord takes the share audio from.
+     * Kept apart from the capturing host process, because Discord hooks the
+     * process it reads and captures inside that process deliver silence.
+     */
+    private renderPid = 0;
     private hostProblem = "";
     private redirectActive = false;
     private lastDecisionAt = 0;
@@ -191,8 +197,8 @@ class Store {
                 sound,
                 originalPid,
                 filterEnabled: settings.store.filterEnabled,
-                hostPid: this.hostPid,
-                hostProblem: this.hostProblem,
+                hostPid: this.hostPid ? this.renderPid : 0,
+                hostProblem: this.hostProblem || (this.renderPid ? "" : "the audio output was not running yet; stop and start the share again"),
                 fallbackAllowed: settings.store.fallbackUnfiltered
             });
             if (!decision) return originalPid;
@@ -276,6 +282,7 @@ class Store {
             if (needOutput !== this.outputWanted) {
                 this.outputWanted = needOutput;
                 const result = await Native.setOutput(needOutput);
+                this.renderPid = needOutput && result.ok ? result.pid ?? 0 : 0;
                 if (!result.ok) this.set({ actionError: result.error ?? "the output could not be changed" });
             }
             if (this.redirectActive || this.panelsOpen() > 0) this.startPolling();
@@ -283,6 +290,7 @@ class Store {
             await this.applyRules();
             if (this.outputWanted) {
                 this.outputWanted = false;
+                this.renderPid = 0;
                 await Native.setOutput(false);
             }
             this.scheduleIdleShutdown();
@@ -298,6 +306,7 @@ class Store {
             return false;
         }
         this.outputWanted = false;
+        this.renderPid = 0;
         this.set({ engineRunning: true, actionError: "" });
         return true;
     }
@@ -393,6 +402,7 @@ class Store {
             if (stats === null && this.state.engineRunning) {
                 // The host went away (crash, killed): start over on the next need.
                 this.hostPid = 0;
+                this.renderPid = 0;
                 this.set({ engineRunning: false, stats: null });
                 if (this.redirectActive) this.setShare("attachFailed", "the audio host stopped");
                 void this.refreshHost().then(() => this.syncHost());
@@ -401,6 +411,7 @@ class Store {
             const newRouter = apps.some(app => isAudioRouter(app.appKey) && !this.state.apps.some(old => old.appKey === app.appKey));
             this.set({ apps, stats });
             if (newRouter) void this.applyRules();
+            if (stats?.output) this.renderPid = stats.output.running ? stats.output.pid : 0;
             this.updateShareFromStats(stats);
             if (apps.length) void this.loadIcons(apps);
         } finally {

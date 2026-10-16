@@ -45,10 +45,14 @@
 #include "../output_sink.h"
 #include "../platform.h"
 #include "../version.h"
+#if defined(_WIN32)
+#    include "../win/render_sink.h"
+#endif
 
 #if defined(_WIN32)
 #    include <fcntl.h>
 #    include <io.h>
+#    include <objbase.h>
 #    include <windows.h>
 #else
 #    include <unistd.h>
@@ -63,6 +67,20 @@ uint32_t currentPid() {
     return static_cast<uint32_t>(GetCurrentProcessId());
 #else
     return static_cast<uint32_t>(getpid());
+#endif
+}
+
+/** Sessions of this executable (the render process) are never listed. */
+std::string selfExePath() {
+#if defined(_WIN32)
+    wchar_t path[MAX_PATH * 2];
+    const DWORD n = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
+    const int size = WideCharToMultiByte(CP_UTF8, 0, path, static_cast<int>(n), nullptr, 0, nullptr, nullptr);
+    std::string out(static_cast<size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, path, static_cast<int>(n), out.data(), size, nullptr, nullptr);
+    return out;
+#else
+    return {};
 #endif
 }
 
@@ -152,6 +170,8 @@ std::string outputJson(const OutputStatus& status) {
     object.number("remutes", status.remutes);
     object.boolean("discordAttached", status.discordAttached);
     object.number("restarts", status.restarts);
+    object.number("pid", status.pid);
+    object.number("underrunFrames", static_cast<long long>(status.underrunFrames));
     return json;
 }
 
@@ -259,6 +279,7 @@ public:
             JsonObject object(json);
             object.boolean("ok", ok);
             if (!ok) object.string("error", error);
+            if (ok && on && output_) object.number("pid", output_->status().pid);
         } else if (command == "mockApps") {
             std::vector<mock::MockEnumerator::App> apps;
             for (size_t i = 2; i < args.size(); i++) {
@@ -300,6 +321,7 @@ private:
         options.maxStreams = static_cast<size_t>(std::max(1L, std::min(64L, maxStreams)));
         options.externalClock = true;
         options.selfPid = currentPid();
+        options.selfExePath = selfExePath();
         options.protectedRoots = protectedRoots_;
 
         std::string enumeratorError, factoryError;
@@ -382,7 +404,16 @@ int main(int argc, char** argv) {
         if (arg == "--backend" && i + 1 < argc) {
             backend = parseBackendKind(argv[++i]);
         } else if (arg == "--output" && i + 1 < argc) {
-            output = std::string(argv[++i]) == "null" ? OutputKind::Null : OutputKind::Wasapi;
+            const std::string kind = argv[++i];
+            output = kind == "null" ? OutputKind::Null : kind == "inprocess" ? OutputKind::InProcess : OutputKind::Wasapi;
+#if defined(_WIN32)
+        } else if (arg == "--render" && i + 1 < argc) {
+            const std::string mapping = argv[++i];
+            uint32_t parent = 0;
+            if (i + 2 < argc && std::string(argv[i + 1]) == "--parent") parent = static_cast<uint32_t>(toLong(argv[i + 2], 0));
+            CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            return runRenderProcess(std::wstring(mapping.begin(), mapping.end()), parent);
+#endif
         } else if (arg == "--protect" && i + 1 < argc) {
             const long pid = toLong(argv[++i], 0);
             if (pid > 0) protectedRoots.push_back(static_cast<uint32_t>(pid));

@@ -55,6 +55,11 @@ Discord: DiscordHook64.dll in the host ─► reads the mix before the mute ─�
   a crash in audio code must not take Discord down, and because it does not depend on Discord's
   Electron/Node ABI. It exits when its stdin closes. Protocol and version are checked at start; a host of
   another protocol is refused with a message.
+- **Two processes.** Discord injects `DiscordHook64.dll` into the process it reads and intercepts its
+  audio calls. In a real share, captures running inside that process delivered only silence (the same
+  capture in any other process worked). So `saf-audio-host` captures and mixes, and feeds a ring in
+  shared memory; a child `saf-audio-host --render` plays it, and *its* pid is the one Discord gets
+  (`native/src/win/remote_sink.cc`). The child exits with its parent.
 - **Output** (`native/src/win/render_sink.cc`): 48 kHz float into a session muted *before* the first
   sample, re-muted within 0.5 s if somebody unmutes it, reopened on device loss. It reports whether
   `DiscordHook64.dll` is loaded into the host — the only state in which the plugin shows "viewers hear

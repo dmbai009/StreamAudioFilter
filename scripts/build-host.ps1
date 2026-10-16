@@ -51,7 +51,7 @@ $common = "/nologo /std:c++17 /EHsc /utf-8 /W4 /wd4100 /O2 /MT /D_USE_MATH_DEFIN
 $hostDir = Join-Path $native "build\host"
 New-Item -ItemType Directory -Force $hostDir | Out-Null
 $hostSources = @(
-    "src\host\host_main.cc", "src\null_sink.cc", "src\win\render_sink.cc",
+    "src\host\host_main.cc", "src\null_sink.cc", "src\win\render_sink.cc", "src\win\remote_sink.cc",
     "src\app_identity.cc", "src\capture_group.cc", "src\engine.cc", "src\hr_advice.cc", "src\platform.cc",
     "src\dsp\convert.cc", "src\dsp\mixer.cc", "src\dsp\resampler.cc", "src\dsp\ring_buffer.cc", "src\mock\mock_backend.cc",
     "src\win\process_loopback.cc", "src\win\session_watcher.cc", "src\win\windows_util.cc"

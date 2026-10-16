@@ -47,6 +47,9 @@ public:
         status.running = running_;
         status.kind = "null";
         status.device = "none (test output)";
+#if defined(_WIN32)
+        status.pid = GetCurrentProcessId();
+#endif
         status.discordAttached = discordHookLoaded();
         return status;
     }

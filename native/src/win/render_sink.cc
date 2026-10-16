@@ -27,6 +27,7 @@
 
 #include "../engine.h"
 #include "../output_sink.h"
+#include "render_sink.h"
 #include "audio_subformat.h"
 #include "com_ptr.h"
 #include "windows_backend.h"
@@ -54,28 +55,31 @@ constexpr REFERENCE_TIME kBufferDuration = 300000;  // 30 ms
 const PROPERTYKEY kDeviceFriendlyName = { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
 constexpr wchar_t kSessionName[] = L"StreamAudioFilter: share audio (muted here)";
 
-class RenderSink : public IOutputSink {
-public:
-    ~RenderSink() override { stop(); }
+} // namespace
 
-    bool start(Engine& engine, std::string&) override {
-        if (running_.exchange(true)) return true;
-        engine_ = &engine;
-        thread_ = std::thread([this] { threadMain(); });
-        return true;
-    }
+RenderSink::~RenderSink() { stop(); }
 
-    void stop() override {
+bool RenderSink::start(Engine& engine, std::string& error) {
+    return startWithSource([&engine](float* out, size_t frames) { engine.pull(out, frames); }, error);
+}
+
+bool RenderSink::startWithSource(Source source, std::string&) {
+    if (running_.exchange(true)) return true;
+    source_ = std::move(source);
+    thread_ = std::thread([this] { threadMain(); });
+    return true;
+}
+
+    void RenderSink::stop() {
         running_ = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (wake_) SetEvent(wake_);
         }
         if (thread_.joinable()) thread_.join();
-        engine_ = nullptr;
     }
 
-    OutputStatus status() const override {
+    OutputStatus RenderSink::status() const {
         std::lock_guard<std::mutex> lock(mutex_);
         OutputStatus status = status_;
         status.running = running_;
@@ -84,13 +88,12 @@ public:
         return status;
     }
 
-private:
-    void setError(const std::string& error) {
+    void RenderSink::setError(const std::string& error) {
         std::lock_guard<std::mutex> lock(mutex_);
         status_.error = error;
     }
 
-    void threadMain() {
+    void RenderSink::threadMain() {
         const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         const bool comOwned = SUCCEEDED(com);
         HANDLE wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -123,7 +126,7 @@ private:
     }
 
     /** One device lifetime. True: stopped on request; false: retry. */
-    bool run(HANDLE wake) {
+    bool RenderSink::run(HANDLE wake) {
         HRESULT hr = S_OK;
         ComPtr<IMMDeviceEnumerator> enumerator;
         if (FAILED(hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(enumerator.put())))) {
@@ -230,7 +233,7 @@ private:
                 hr = render->GetBuffer(frames, &data);
                 if (SUCCEEDED(hr)) {
                     float* samples = reinterpret_cast<float*>(data);
-                    engine_->pull(samples, frames);
+                    source_(samples, frames);
                     for (UINT32 i = 0; i < frames * 2; i++) windowPeak = std::max(windowPeak, std::fabs(samples[i]));
                     hr = render->ReleaseBuffer(frames, 0);
                     windowFrames += frames;
@@ -265,19 +268,13 @@ private:
         return clean;
     }
 
-    Engine* engine_ = nullptr;
-    std::thread thread_;
-    std::atomic<bool> running_ { false };
-    mutable std::mutex mutex_;
-    HANDLE wake_ = nullptr;
-    OutputStatus status_;
-};
 
-} // namespace
+std::unique_ptr<IOutputSink> createRemoteSink();
 
 std::unique_ptr<IOutputSink> createOutputSink(OutputKind kind, std::string&) {
     if (kind == OutputKind::Null) return createNullSink();
-    return std::make_unique<RenderSink>();
+    if (kind == OutputKind::InProcess) return std::make_unique<RenderSink>();
+    return createRemoteSink();
 }
 
 } // namespace saf
