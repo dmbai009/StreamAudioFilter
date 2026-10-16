@@ -4,8 +4,15 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
+/**
+ * StreamAudioFilter — tests for saf-setup.exe on a fake user profile: every
+ * scenario runs against a temporary %APPDATA% / %LOCALAPPDATA% with a fake
+ * Discord, through the real command line of saf-setup.exe (Windows only).
+ *     node tests/setup.test.mjs <saf-setup.exe> <saf-audio-host.exe>
+ */
+
 import assert from "node:assert/strict";
-import { spawn,spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
