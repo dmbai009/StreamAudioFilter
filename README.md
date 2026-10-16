@@ -180,8 +180,8 @@ Honestly about what has been verified and what has not.
   application list, live rules, switching an application off on the fly, mode B, applications appearing
   and closing, reading PCM (not silence, not overload), statistics, the capture gate, stopping and
   trimming invalid arguments, and two instances of one application as a single row;
-* the portable DSP core and the mixing engine: `./scripts/run-native-tests.sh` — **205 checks, 0
-  failures** (`dsp_tests` 108, `engine_tests` 97): the u8/s16/s24/s32/f32 formats, downmixing, the
+* the portable DSP core and the mixing engine: `./scripts/run-native-tests.sh` — **206 checks, 0
+  failures** (`dsp_tests` 108, `engine_tests` 98): the u8/s16/s24/s32/f32 formats, downmixing, the
   resampler (SNR > 70 dB at 44.1↔48 kHz), the limiter without clipping when summing, modes A and B,
   changing rules live, applications closing, the limit of simultaneous captures, the "capture gate"
   (nothing is captured while no share runs) and capturing several instances of one application without

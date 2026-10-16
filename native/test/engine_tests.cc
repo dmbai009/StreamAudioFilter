@@ -505,6 +505,21 @@ static void testMultiInstanceEngine() {
         CHECK(game && game->instances == 1, "still a single instance");
     }
 
+    // The level one instance produces on its own. Everything after the restart is
+    // compared against this instead of a hard coded number, so the check does not
+    // depend on how loud the mock renders its tone - and it pins down that the
+    // instance that is *not* running yet is not in the mix either.
+    // The first window after the stream appeared can still contain its 20 ms fade in,
+    // so it is read and dropped before the reference is measured.
+    readFrames(*fixture.engine, 4800, 500);
+    const auto referenceAudio = readFrames(*fixture.engine, 9600, 500);
+    const double referenceLevel = toneMagnitude(referenceAudio, 48000, toneFirst);
+    const double low = referenceLevel * 0.8;
+    const double high = referenceLevel * 1.2;
+    CHECK(referenceLevel > 0.12 && toneMagnitude(referenceAudio, 48000, toneSecond) < 0.05,
+          "the single instance is audible on its own and the second one is not in the mix yet (%.3f / %.3f)",
+          referenceLevel, toneMagnitude(referenceAudio, 48000, toneSecond));
+
     // The second instance is started while the first one is already streaming.
     fixture.enumerator->setApps({ first, second });
 
@@ -514,50 +529,62 @@ static void testMultiInstanceEngine() {
         return game && game->instances == 2 && game->captured;
     }, 4000), "the capture follows the new instance");
 
-    // Both instances must be audible, from one stream (the engine must not mix
-    // the application twice), and neither of them twice as loud as the other.
+    // Both instances must be audible, from one stream (the engine must not mix the
+    // application twice), each at the level one instance produces.
     //
-    // A window measured right after the change can still contain the restart:
-    // the old capture fades out, the new one starts empty, so this application
-    // is quiet for about a tenth of a second (documented in
-    // docs/LIMITATIONS.md). Asserting a fixed instant made this test depend on
-    // where exactly that window fell and failed on a loaded Windows runner, so
-    // the *settled* state is asserted instead - plus the bound that it has to
-    // settle quickly.
+    // "Settled" means two consecutive windows in which both tones are close to the
+    // reference level - not the first moment they cross some low threshold. A
+    // window that merely crosses a threshold can still sit inside the change: the
+    // old capture fades out while the new one fills its buffers, so a tone can be
+    // at half its level there. Comparing magnitudes in such a window is what made
+    // this check flaky on a loaded Windows runner, where it failed with 0.122 vs
+    // 0.254 right after having "settled" at 0.151 / 0.146 (build 19045, MSVC,
+    // 2026-10-16). The quick-settle bound is therefore measured to the settled
+    // state, which is what "the application is quiet for about a tenth of a second"
+    // in docs/LIMITATIONS.md actually describes.
     const auto restartStart = steady_clock::now();
     double windowFirst = 0.0;
     double windowSecond = 0.0;
-    double peakFirst = 0.0;
-    double peakSecond = 0.0;
+    double previousFirst = 0.0;
+    double previousSecond = 0.0;
+    double peakSum = 0.0;
     bool settled = false;
-    while (steady_clock::now() - restartStart < seconds(4)) {
+    while (steady_clock::now() - restartStart < seconds(8)) {
         const auto audio = readFrames(*fixture.engine, 4800, 500);
+        previousFirst = windowFirst;
+        previousSecond = windowSecond;
         windowFirst = toneMagnitude(audio, 48000, toneFirst);
         windowSecond = toneMagnitude(audio, 48000, toneSecond);
-        peakFirst = std::max(peakFirst, windowFirst);
-        peakSecond = std::max(peakSecond, windowSecond);
-        if (windowFirst > 0.12 && windowSecond > 0.12) {
+        peakSum = std::max(peakSum, windowFirst + windowSecond);
+        const auto atLevel = [&](double value, double previous) {
+            return value > low && value < high && previous > low && previous < high;
+        };
+        if (atLevel(windowFirst, previousFirst) && atLevel(windowSecond, previousSecond)) {
             settled = true;
             break;
         }
     }
     const auto settleMs = duration_cast<milliseconds>(steady_clock::now() - restartStart).count();
-    CHECK(settled, "both instances are in the mix (%.3f / %.3f after %lld ms)", windowFirst, windowSecond,
+    CHECK(settled, "both instances settle at their own level (%.3f / %.3f after %lld ms)", windowFirst, windowSecond,
           static_cast<long long>(settleMs));
-    CHECK(settleMs < 2000, "the restart settles quickly (%lld ms)", static_cast<long long>(settleMs));
-    // No window during the restart may contain an instance twice: that would
-    // show up as a level near double the one capture produces.
-    CHECK(peakFirst < 0.45 && peakSecond < 0.45, "no instance is captured twice during the restart (%.3f / %.3f)",
-          peakFirst, peakSecond);
-    std::printf("  restart took %lld ms, peak levels %.3f / %.3f\n", static_cast<long long>(settleMs), peakFirst, peakSecond);
+    CHECK(settleMs < 3000, "the restart settles quickly (%lld ms)", static_cast<long long>(settleMs));
+    // No window during the whole change may contain an instance twice: one instance
+    // reads the reference level, so a doubled capture would push the sum of the two
+    // tones towards twice that.
+    CHECK(peakSum < referenceLevel * 2.9, "no instance is captured twice during the restart (peak sum %.3f, one instance reads %.3f)",
+          peakSum, referenceLevel);
+    std::printf("  restart took %lld ms, settled levels %.3f / %.3f (one instance reads %.3f, peak sum %.3f)\n",
+                static_cast<long long>(settleMs), windowFirst, windowSecond, referenceLevel, peakSum);
 
     // The settled state, on a window read after the restart finished.
     const auto audio = readFrames(*fixture.engine, 9600);
     const double levelFirst = toneMagnitude(audio, 48000, toneFirst);
     const double levelSecond = toneMagnitude(audio, 48000, toneSecond);
-    CHECK(levelFirst > 0.12 && levelSecond > 0.12, "both tones present (%f / %f)", levelFirst, levelSecond);
-    CHECK(std::fabs(levelFirst - levelSecond) < 0.12, "no instance is captured twice (%f vs %f)", levelFirst, levelSecond);
-    CHECK(levelFirst < 0.45 && levelSecond < 0.45, "no doubled level (%f / %f)", levelFirst, levelSecond);
+    CHECK(levelFirst > low && levelFirst < high && levelSecond > low && levelSecond < high,
+          "both instances at their own level (%.3f / %.3f, one instance reads %.3f)", levelFirst, levelSecond, referenceLevel);
+    CHECK(std::fabs(levelFirst - levelSecond) < referenceLevel * 0.35, "neither instance is captured twice (%.3f vs %.3f)",
+          levelFirst, levelSecond);
+    CHECK(levelFirst < 0.45 && levelSecond < 0.45, "no doubled level (%.3f / %.3f)", levelFirst, levelSecond);
     CHECK(fixture.engine->stats().activeStreams == 1, "still exactly one stream, got %zu",
         fixture.engine->stats().activeStreams);
 
