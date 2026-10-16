@@ -27,11 +27,32 @@ void Mixer::mix(const std::vector<MixSource*>& sources, float* out) {
     for (MixSource* source : sources) {
         if (!source || !source->buffer) continue;
 
-        const size_t got = source->buffer->read(scratch_.data(), static_cast<size_t>(blockFrames_));
-        if (got < static_cast<size_t>(blockFrames_)) {
-            // Missing tail is silence: the output timeline must not shift.
-            std::memset(scratch_.data() + got * channels_, 0, (static_cast<size_t>(blockFrames_) - got) * channels_ * sizeof(float));
-            source->starvedFrames += static_cast<uint64_t>(blockFrames_) - got;
+        const size_t block = static_cast<size_t>(blockFrames_);
+        size_t got = 0;
+        if (source->primeFrames > 0) {
+            const size_t available = source->buffer->availableFrames();
+            if (!source->primed && available >= std::max(source->primeFrames, block)) source->primed = true;
+            if (source->primed && source->maxBacklogFrames > 0 && available > source->maxBacklogFrames) {
+                const size_t excess = available - source->primeFrames;
+                source->buffer->dropOldest(excess);
+                source->trimmedFrames += excess;
+            }
+            if (source->primed) {
+                got = source->buffer->read(scratch_.data(), block);
+                if (got < block) {
+                    source->starvedFrames += block - got;
+                    source->primed = false;  // ran dry: wait for a cushion again
+                }
+            }
+        } else {
+            got = source->buffer->read(scratch_.data(), block);
+            if (got < block) source->starvedFrames += block - got;
+        }
+        if (got < block) {
+            // Missing tail is silence: the output timeline must not shift. The
+            // gain ramp below still runs, so a fade out completes even while a
+            // source is silent.
+            std::memset(scratch_.data() + got * channels_, 0, (block - got) * channels_ * sizeof(float));
         }
 
         float blockPeak = 0.0f;

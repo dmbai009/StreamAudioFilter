@@ -154,6 +154,13 @@ int GroupedCaptureSource::latencyMs() const {
     return latency;
 }
 
+bool GroupedCaptureSource::alive() const {
+    for (const auto& part : parts_) {
+        if (part && !part->alive()) return false;
+    }
+    return true;
+}
+
 std::string GroupedCaptureSource::lastError() const {
     std::vector<std::string> errors = startErrors_;
     for (const auto& part : parts_) {

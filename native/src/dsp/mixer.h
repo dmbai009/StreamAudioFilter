@@ -40,6 +40,20 @@ struct MixSource {
     /** Diagnostics. */
     uint64_t starvedFrames = 0;
 
+    /**
+     * Jitter handling for a mixer driven by an audio device clock. With
+     * primeFrames > 0 the source stays silent until that much audio is
+     * buffered, and re-primes after running dry, so a capture whose packets
+     * arrive with a phase offset to the output does not produce a stutter of
+     * tiny gaps. maxBacklogFrames > 0 caps the buffered audio (drift between
+     * two device clocks) by dropping the oldest frames down to primeFrames,
+     * which keeps the delay bounded. 0 disables either mechanism.
+     */
+    size_t primeFrames = 0;
+    size_t maxBacklogFrames = 0;
+    bool primed = false;
+    uint64_t trimmedFrames = 0;
+
     bool reachedTarget() const { return gain == gainTarget; }
     bool finishedFadeOut() const { return gainTarget <= 0.0f && gain <= 0.0f; }
 };
