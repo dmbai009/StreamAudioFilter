@@ -113,10 +113,10 @@ jobs:
 
           ## Changes
 
-          - A single **Mute all stream audio** button silences the plugin mix in both application modes and restores the previous mix.
-          - Installer shows installed/available versions and offers Install, Update, Reinstall and Uninstall.
-          - Removal preserves Vencord and lets you keep or reset this plugin's settings. Legacy database keys are cleared on the plugin's next start.
-          - Fixed a race when replacing the audio host and a Windows test issue.
+          - Fixed the bright system scrollbar appearing in dark Discord themes.
+          - Quick-panel, floating-panel and diagnostic scrollbars now use the active theme's thumb color and a transparent track.
+          - Added compatibility styling for older Discord builds. Scrollbar styles are scoped to StreamAudioFilter and do not change Discord's other panels.
+          - Checked 24 panel interaction states and 12 scrolling states across dark, light, midnight and ash themes, including wheel scrolling, thumb dragging and live theme changes.
 
           The installer needs no administrator rights and downloads nothing. Existing Vencord and other plugins' settings are preserved. Restart Discord after installation or removal.
 

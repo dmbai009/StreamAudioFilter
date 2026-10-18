@@ -88,6 +88,37 @@
     min-height: 0;
 }
 
+/* Plain overflow containers do not inherit Discord's scroller classes. Keep
+ * their track transparent and use the current theme's thumb colour instead of
+ * the operating system's potentially light scrollbar. */
+:is(.vc-saf-popout-body, .vc-saf-floating-body, .vc-saf-diag-pre) {
+    --vc-saf-scrollbar-thumb: var(--scrollbar-thin-thumb, var(--background-mod-strong, #80848e));
+    scrollbar-width: thin;
+    scrollbar-color: var(--vc-saf-scrollbar-thumb) transparent;
+}
+
+/* Compatibility with Discord builds predating standard scrollbar styling. */
+:is(.vc-saf-popout-body, .vc-saf-floating-body, .vc-saf-diag-pre)::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+:is(.vc-saf-popout-body, .vc-saf-floating-body, .vc-saf-diag-pre)::-webkit-scrollbar-thumb {
+    background-color: var(--vc-saf-scrollbar-thumb);
+    border: 2px solid transparent;
+    border-radius: 8px;
+    background-clip: padding-box;
+}
+
+:is(.vc-saf-popout-body, .vc-saf-floating-body, .vc-saf-diag-pre)::-webkit-scrollbar-track,
+:is(.vc-saf-popout-body, .vc-saf-floating-body, .vc-saf-diag-pre)::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+:is(.vc-saf-popout-body, .vc-saf-floating-body, .vc-saf-diag-pre)::-webkit-scrollbar-button {
+    display: none;
+}
+
 /* -------------------------------------------------------- floating panel */
 
 .vc-saf-floating-root {
