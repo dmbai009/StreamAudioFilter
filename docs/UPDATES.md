@@ -6,6 +6,9 @@ distribution with official Vencord, which does not include StreamAudioFilter.
 Install a newer StreamAudioFilter release to update both together. Settings and
 application rules are preserved.
 
+For a newer Vencord version before another prebuilt bundle is available, follow
+[Rebuilding with a newer Vencord](REBUILDING.md).
+
 Discord updates independently. Its internal JavaScript and native screen-share
 interfaces can change while the custom Vencord bundle stays fixed. Updating
 Vencord can fix startup incompatibilities, but the plugin's screen-share patches

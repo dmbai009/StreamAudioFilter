@@ -12,7 +12,7 @@ Nothing below counts as "works in Discord" unless the viewer heard it.
 | `tests/setup.test.mjs` (Windows, fake profile) | install, repair, uninstall back to the original `app.asar`, existing Vencord kept/restored, version mismatch refused, rollback, refusal while Discord runs |
 | `tests/rules.test.ts` | switch semantics, modes, migration, audio routers |
 | `tests/soundshare.test.ts` | fail closed decision table, own stream detection, the patch regexes against Discord's code |
-| `dev/typecheck.sh` | tsc + eslint inside Vencord v1.15.11 |
+| `dev/typecheck.sh` | tsc + oxlint inside the Vencord revision selected for the build |
 
 ## Real machine
 

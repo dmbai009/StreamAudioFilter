@@ -56,6 +56,9 @@ From the same release: `streamaudiofilter-vencord-dist.zip` and `saf-audio-host.
 
 ## From source
 
+To choose a newer Vencord release instead of the bundled version, follow
+[Rebuilding with a newer Vencord](REBUILDING.md).
+
 Needs git, Node.js 22+, Visual Studio 2019/2022 (or Build Tools) with "Desktop development with C++".
 
 ```powershell

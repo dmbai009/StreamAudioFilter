@@ -28,6 +28,7 @@ Discord), run it, choose your Discord, press **Install**, start Discord.
 - Restart Discord after making changes. Downgrading with an older installer is refused.
 - Manual installation and building from source: [docs/INSTALL.md](docs/INSTALL.md).
 - Discord/Vencord updates and recovery: [docs/UPDATES.md](docs/UPDATES.md).
+- Rebuild with a newer Vencord: [docs/REBUILDING.md](docs/REBUILDING.md).
 
 ## Use
 
