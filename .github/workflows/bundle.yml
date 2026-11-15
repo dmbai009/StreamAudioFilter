@@ -43,7 +43,7 @@ env:
   # own updater off on purpose (see the build step), so this pin is what users
   # get until a new release of this repository is published: bump it
   # deliberately, then tag a release.
-  VENCORD_REF: v1.15.11
+  VENCORD_REF: v1.15.17
 
 jobs:
   bundle:

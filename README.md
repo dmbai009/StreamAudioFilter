@@ -27,6 +27,7 @@ Discord), run it, choose your Discord, press **Install**, start Discord.
 - **Keep my settings when uninstalling** is enabled by default. Disable it to reset this plugin's settings and rules. Legacy entries in Discord's shared database are discarded immediately and physically cleared on the plugin's next start; other database entries are never touched.
 - Restart Discord after making changes. Downgrading with an older installer is refused.
 - Manual installation and building from source: [docs/INSTALL.md](docs/INSTALL.md).
+- Discord/Vencord updates and recovery: [docs/UPDATES.md](docs/UPDATES.md).
 
 ## Use
 

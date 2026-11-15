@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CI: "true"
-      VENCORD_REF: v1.15.11
+      VENCORD_REF: v1.15.17
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -76,7 +76,7 @@ jobs:
           npm install --global "pnpm@$pnpm_version"
           pnpm install --frozen-lockfile
 
-      - name: tsc + eslint
+      - name: tsc + oxlint
         run: VENCORD_DIR="$RUNNER_TEMP/vencord" bash dev/typecheck.sh
 
       - name: Panel visual and interaction tests

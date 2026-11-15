@@ -59,7 +59,7 @@ function payload({ version = VERSION } = {}) {
     writeFileSync(join(dir, "dist", "renderer.js"), `const PLUGIN_VERSION="${VERSION}";forceHookSoundshare();`);
     writeFileSync(join(dir, "dist", "renderer.js.map"), "maps are not installed");
     copyFileSync(hostExe, join(dir, "saf-audio-host.exe"));
-    writeFileSync(join(dir, "saf-version.txt"), `version=${version}\nprotocol=${PROTOCOL}\nvencord=v1.15.11\n`);
+    writeFileSync(join(dir, "saf-version.txt"), `version=${version}\nprotocol=${PROTOCOL}\nvencord=v1.15.17\n`);
     return dir;
 }
 

@@ -33,6 +33,18 @@ Command line (same code): `saf-setup.exe --list | --status | --install | --updat
 installation commands accept `--discord <folder>` and `--payload-dir <folder>`.
 Removal: `saf-setup.exe --uninstall [--remove-settings]`.
 
+### Discord stays on the loading screen
+
+The old bundle based on Vencord v1.15.11 was observed to stop Discord 1.0.9268
+(web build 673869) at startup with `Uncaught TypeError: i.A is not a constructor`.
+The replacement bundle uses Vencord v1.15.17; Discord and StreamAudioFilter both
+started successfully with it on the affected machine. Use the rebuilt installer;
+reinstalling the old bundle brings the incompatible Vencord code back.
+
+If you need to recover before obtaining a rebuilt installer, quit Discord and
+uninstall StreamAudioFilter with settings preserved. The installer restores the
+previous Vencord build from `dist.saf-backup` when available.
+
 ## Manual
 
 From the same release: `streamaudiofilter-vencord-dist.zip` and `saf-audio-host.exe`.
@@ -44,14 +56,14 @@ From the same release: `streamaudiofilter-vencord-dist.zip` and `saf-audio-host.
 
 ## From source
 
-Needs git, Node.js 20+, Visual Studio 2019/2022 (or Build Tools) with "Desktop development with C++".
+Needs git, Node.js 22+, Visual Studio 2019/2022 (or Build Tools) with "Desktop development with C++".
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1            # build + install
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Uninstall
 ```
 
-It builds the audio host and the installer (`scripts/build-host.ps1`), Vencord v1.15.11 with the plugin,
+It builds the audio host and the installer (`scripts/build-host.ps1`), Vencord v1.15.17 with the plugin,
 and installs with `saf-setup.exe --payload-dir` — the same code as the release installer.
 
 Development checks: `scripts/run-native-tests.sh`, `node tests/host.test.mjs <host>`,

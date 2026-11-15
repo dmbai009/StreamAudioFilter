@@ -113,14 +113,16 @@ jobs:
 
           ## Changes
 
-          - Fixed the bright system scrollbar appearing in dark Discord themes.
-          - Quick-panel, floating-panel and diagnostic scrollbars now use the active theme's thumb color and a transparent track.
-          - Added compatibility styling for older Discord builds. Scrollbar styles are scoped to StreamAudioFilter and do not change Discord's other panels.
-          - Checked 24 panel interaction states and 12 scrolling states across dark, light, midnight and ash themes, including wheel scrolling, thumb dragging and live theme changes.
+          - Fixed Discord staying on the loading screen after installing an older StreamAudioFilter bundle. Updated the bundled Vencord from v1.15.11 to v1.15.17.
+          - Verified startup on Discord Stable 1.0.9268 (web build 673869): Discord connected successfully and StreamAudioFilter started. Live stream audio was not part of this startup check.
+          - Updated source installation and CI to the same Vencord version, with Node.js 22+ and Vencord's current oxlint checker.
+          - Existing plugin rules and Vencord settings are preserved. Install this release over the old version; no uninstall is needed.
 
           The installer needs no administrator rights and downloads nothing. Existing Vencord and other plugins' settings are preserved. Restart Discord after installation or removal.
 
-          **Manual:** \`streamaudiofilter-vencord-dist.zip\` (Vencord with the plugin, see its README) plus \`saf-audio-host.exe\` into \`%APPDATA%\\Vencord\\streamAudioFilter\\native\\\`. All files must come from the same release.
+          **Manual:** \`streamaudiofilter-vencord-dist.zip\` (Vencord with the plugin, see its README) plus \`saf-audio-host.exe\` into \`%APPDATA%\\Vencord\\streamAudioFilter\\native\\0.3.2\\\`. All files must come from the same release.
+
+          **Updates and recovery:** this custom bundle includes Vencord, so Discord updates can require a newer StreamAudioFilter release even if the filter itself has not changed. Vencord's stock updater remains disabled because it would remove the custom plugin. See [update compatibility](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/docs/UPDATES.md).
 
           ## Checksums (SHA-256)
 

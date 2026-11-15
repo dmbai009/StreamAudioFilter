@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Type-checks and lints the plugin with the real Vencord toolchain, exactly the
-# way Vencord's own CI does it (tsc --noEmit + eslint), because a plugin that
+# way Vencord's own CI does it (tsc --noEmit + oxlint), because a plugin that
 # does not compile inside Vencord is worthless.
 #
 # Usage:
@@ -42,17 +42,20 @@ for item in "${PLUGIN_ITEMS[@]}"; do
 done
 
 cd "$VENCORD_DIR"
+# Vencord ignores src/userplugins in git. Pass files explicitly so the linter
+# does not skip the whole directory when walking ignored paths.
+mapfile -d '' -t PLUGIN_SOURCES < <(find "$TARGET" -type f \( -name '*.ts' -o -name '*.tsx' \) -print0)
 echo "== tsc --noEmit =="
 npx tsc --noEmit
 
 if [ "${FIX:-0}" = "1" ]; then
-    echo "== eslint --fix (results are copied back into the repository) =="
-    npx eslint --fix "src/userplugins/StreamAudioFilter" || true
+    echo "== oxlint --fix (results are copied back into the repository) =="
+    npx oxlint --no-ignore --fix "${PLUGIN_SOURCES[@]}" || true
     for item in "${PLUGIN_ITEMS[@]}"; do
         [ -e "$TARGET/$item" ] && cp -r "$TARGET/$item" "$ROOT/"
     done
 fi
 
-echo "== eslint =="
-npx eslint "src/userplugins/StreamAudioFilter"
+echo "== oxlint =="
+npx oxlint --no-ignore "${PLUGIN_SOURCES[@]}"
 echo "== ok =="

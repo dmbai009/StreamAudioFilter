@@ -7,7 +7,7 @@
 # saf-setup.exe, the same program and the same code as the release installer,
 # so both ways behave identically (backup, rollback, uninstall).
 #
-# Needs: git, Node.js 20+ (pnpm is fetched through npx), Visual Studio 2019/2022
+# Needs: git, Node.js 22+ (pnpm is fetched through npx), Visual Studio 2019/2022
 # or its Build Tools with "Desktop development with C++". Nothing is downloaded
 # except Vencord's sources and its npm dependencies, and the script prints that
 # before it happens.
@@ -22,7 +22,7 @@ param(
     # Where the Vencord source tree lives / should be created.
     [string] $VencordDir = (Join-Path $env:USERPROFILE "Vencord"),
     # The Vencord release to build (the release bundle uses the same one).
-    [string] $VencordRef = "v1.15.11",
+    [string] $VencordRef = "v1.15.17",
     # A specific Discord folder (default: the first one found).
     [string] $Discord = "",
     [switch] $Uninstall
@@ -57,7 +57,7 @@ if ($Uninstall) {
 }
 
 Need git "Install Git for Windows: https://git-scm.com/download/win"
-Need node "Install Node.js 20 or newer: https://nodejs.org"
+Need node "Install Node.js 22 or newer: https://nodejs.org"
 $version = (Select-String -Path (Join-Path $root "version.ts") -Pattern 'PLUGIN_VERSION = "([^"]+)"').Matches[0].Groups[1].Value
 $protocol = (Select-String -Path (Join-Path $root "version.ts") -Pattern 'PROTOCOL_VERSION = (\d+)').Matches[0].Groups[1].Value
 
